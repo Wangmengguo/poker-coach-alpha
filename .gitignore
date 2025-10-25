@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.python-version
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+
+# Environments
+.env
+.venv/
+venv/
+
+# Build
+build/
+dist/
+
+# Node/web
+node_modules/
+public/*.map
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Uvicorn/pytest artifacts
+*.sqlite

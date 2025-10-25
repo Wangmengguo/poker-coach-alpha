@@ -1,0 +1,7 @@
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; background: #0b1520; color: #e6eef5; }
+main { max-width: 800px; margin: 40px auto; padding: 0 16px; }
+h1 { margin-bottom: 12px; }
+.controls { display: flex; gap: 8px; margin-bottom: 16px; }
+button { background: #1c2b3a; color: #e6eef5; border: 1px solid #2f4863; padding: 8px 12px; border-radius: 6px; cursor: pointer; }
+button:hover { background: #213549; }
+pre { background: #0f1c29; padding: 12px; border: 1px solid #22374b; border-radius: 6px; min-height: 200px; }

@@ -1,0 +1,23 @@
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+exclude = [
+  "/pokerkit/",
+  "/.venv/",
+  "/build/",
+  "/dist/"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+  "pokerkit",
+  ".venv",
+  "build",
+  "dist",
+  "public"
+]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # Let black handle line length
+
