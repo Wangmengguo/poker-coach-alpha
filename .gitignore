@@ -34,3 +34,6 @@ public/*.map
 
 # Uvicorn/pytest artifacts
 *.sqlite
+
+# Ignore bundled pokerkit repo
+pokerkit/
