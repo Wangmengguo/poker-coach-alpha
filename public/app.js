@@ -21,7 +21,9 @@ async function start() {
 function connectWS() {
   const ws = new WebSocket(`ws://${location.host}/ws/tables/default?player_id=human`);
   ws.onopen = () => log('WS connected');
-  ws.onmessage = (ev) => log(`WS ← ${ev.data}`);
+ws.onmessage = (ev) => {
+  log(`WS ← ${ev.data}`);
+};
   ws.onclose = () => log('WS closed');
   // Example send:
   setTimeout(() => {

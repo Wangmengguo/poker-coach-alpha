@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from poker.table import TableState
+from poker.engine import TableEngine, EngineConfig
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -52,9 +52,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# In-memory single table stub for MVP scaffold
+# In-memory single table engine for MVP
 DEFAULT_TABLE_ID = "default"
-_tables: Dict[str, TableState] = {DEFAULT_TABLE_ID: TableState.default()}
+_engines: Dict[str, TableEngine] = {DEFAULT_TABLE_ID: TableEngine(EngineConfig())}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -73,51 +73,70 @@ def create_table():
 
 @app.post("/tables/{table_id}/join")
 def join_table(table_id: str):
-    table = _tables.get(table_id)
-    if not table:
+    engine = _engines.get(table_id)
+    if not engine:
         return JSONResponse(status_code=404, content={"error": "table not found"})
-    # MVP skeleton: assign human to seat 1 if free
-    if table.human_player_id is None:
-        table.human_player_id = "human"
-        seat = 1
-    else:
-        seat = 1
-    return {"player_id": table.human_player_id, "seat": seat}
+    # MVP: fixed human seat 1
+    return {"player_id": "human", "seat": 1}
 
 
 @app.post("/tables/{table_id}/start")
 def start_session(table_id: str):
-    table = _tables.get(table_id)
-    if not table:
+    engine = _engines.get(table_id)
+    if not engine:
         return JSONResponse(status_code=404, content={"error": "table not found"})
-    # TODO: hook into pokerkit engine and start hand loop
-    table.session_active = True
-    return {"hand_id": "h_00001"}
+    engine.start_session()
+    # Advance until prompt or hand end and broadcast
+    messages, _ = engine.advance(human_seat=1)
+    for m in messages:
+        # best-effort broadcast
+        try:
+            import anyio
+            anyio.from_thread.run(manager.broadcast, table_id, m)
+        except Exception:
+            pass
+    return {"hand_id": f"h_{engine.hand_index:05d}"}
 
 
 @app.get("/tables/{table_id}/state")
 def get_state(table_id: str):
-    table = _tables.get(table_id)
-    if not table:
+    engine = _engines.get(table_id)
+    if not engine or engine.state is None:
         return JSONResponse(status_code=404, content={"error": "table not found"})
-    return table.snapshot()
+    snap = engine.build_table_snapshot()
+    return {"type": "snapshot", "seq": 0, "table": snap}
 
 
 @app.websocket("/ws/tables/{table_id}")
 async def ws_table(websocket: WebSocket, table_id: str):
     await manager.connect(table_id, websocket)
     try:
-        # Send initial snapshot
-        table = _tables.get(table_id) or TableState.default()
-        await websocket.send_json({"type": "snapshot", "seq": table.seq, "table": table.snapshot()["table"]})
-        # Echo loop (placeholder until engine + bots are wired)
+        engine = _engines.get(table_id)
+        if engine and engine.state is not None:
+            await websocket.send_json({"type": "snapshot", "seq": 0, "table": engine.build_table_snapshot()})
+        # Main loop: receive client actions and advance engine
         while True:
             data = await websocket.receive_json()
-            # For now, just acknowledge any action message
-            await websocket.send_json({"type": "ack", "received": data})
+            if data.get("type") == "action":
+                # Apply and advance
+                engine = _engines.get(table_id)
+                if not engine or engine.state is None:
+                    await websocket.send_json({"type": "error", "message": "table not ready"})
+                    continue
+                # Translate client action into engine action
+                action = data.get("action") or {}
+                try:
+                    engine.apply_action(action)
+                except Exception as e:
+                    await websocket.send_json({"type": "error", "message": str(e)})
+                    continue
+                msgs, _prompt = engine.advance(human_seat=1)
+                for m in msgs:
+                    await manager.broadcast(table_id, m)
+            else:
+                await websocket.send_json({"type": "ack", "received": data})
     except WebSocketDisconnect:
         manager.disconnect(table_id, websocket)
     except Exception:
         manager.disconnect(table_id, websocket)
-        # Don't crash the server on WS errors in scaffold
         return
