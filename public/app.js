@@ -10,9 +10,9 @@ function log(msg) {
 }
 
 function renderState(table) {
-  const players = table.players.map(p => `${p.seat}:${p.id} ${p.stack}${p.in_hand?'':' (out)'}`).join(' | ');
+  const players = table.players.map(p => `${p.seat}:${p.id} ${p.stack}${p.in_hand?'':' (out)'}${p.seat===1?` [${(p.hole||[]).join(' ')}]`:''}`).join(' | ');
   const bets = Object.entries(table.bets).map(([s,b]) => `s${s}:${b}`).join(', ');
-  stateEl.textContent = `hand ${table.hand_id}  street=${table.street}  pot=${table.pot}\nboard: ${table.board.join(' ')}\nplayers: ${players}\nbets: ${bets}\nto_act: ${table.to_act}`;
+  stateEl.textContent = `hand ${table.hand_id}  street=${table.street}  pot=${table.pot}\nboard: ${table.board.join(' ')}\nplayers: ${players}\nbets: ${bets}\nto_act: ${table.to_act}  last=${table.last_op||''}`;
 }
 
 function renderActions(legal) {

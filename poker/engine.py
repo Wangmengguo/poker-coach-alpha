@@ -145,12 +145,20 @@ class TableEngine:
         assert self.state is not None
         players = []
         for idx in self.state.player_indices:
+            # Hole cards perspective: human sees own holes fully; others show up cards only
+            if (idx + 1) == self.cfg.human_seat:
+                hole = [str(c) for c in self.state.hole_cards[idx]]
+            else:
+                hole = []
+                for c, up in zip(self.state.hole_cards[idx], self.state.hole_card_statuses[idx]):
+                    hole.append(str(c) if up else "??")
             players.append(
                 {
                     "seat": idx + 1,
                     "id": self.player_ids[idx],
                     "stack": int(self.state.stacks[idx]),
                     "in_hand": bool(self.state.statuses[idx]),
+                    "hole": hole,
                 }
             )
         # Flatten single board across streets
@@ -162,6 +170,10 @@ class TableEngine:
         bets: Dict[str, int] = {str(i + 1): int(b) for i, b in enumerate(self.state.bets)}
 
         to_act = self.state.turn_index
+        last_op = None
+        if getattr(self.state, "operations", None):
+            op = self.state.operations[-1]
+            last_op = op.__class__.__name__
         return {
             "table_id": "default",
             "hand_id": f"h_{self.hand_index:05d}",
@@ -174,6 +186,7 @@ class TableEngine:
             "bets": bets,
             "to_act": None if to_act is None else to_act + 1,
             "legal_actions": self.legal_actions(),
+            "last_op": last_op,
         }
 
     def _street_name(self) -> str:
