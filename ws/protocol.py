@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
+
 from pydantic import BaseModel, Field
+
+# ========== Action & Legal Action Models ==========
 
 
 class LegalAction(BaseModel):
@@ -11,17 +14,149 @@ class LegalAction(BaseModel):
     max: Optional[int] = None
 
 
-class Prompt(BaseModel):
-    type: str = Field(default="prompt", const=True)
-    seq: int
-    to_act: int
-    deadline: Optional[str]
-    legal_actions: List[LegalAction]
-
-
 class ClientAction(BaseModel):
-    type: str = Field(default="action", const=True)
+    type: Literal["action"] = "action"
     action_id: str
     hand_id: str
     seat: int
     action: LegalAction
+
+
+# ========== Player & Table State Models ==========
+
+
+class PlayerSnapshot(BaseModel):
+    seat: int
+    id: str
+    stack: int
+    in_hand: bool = True
+    hole: List[str] = Field(default_factory=list)
+
+
+class TableSnapshot(BaseModel):
+    table_id: str
+    hand_id: str
+    button_seat: int
+    blinds: Dict[str, int]
+    players: List[PlayerSnapshot]
+    street: str
+    board: List[str]
+    pot: int
+    bets: Dict[str, int]
+    to_act: Optional[int]
+    legal_actions: List[LegalAction]
+    last_op: Optional[str] = None
+
+
+# ========== WebSocket Message Types ==========
+
+
+class Snapshot(BaseModel):
+    type: Literal["snapshot"] = "snapshot"
+    seq: int
+    table: TableSnapshot
+
+
+class Prompt(BaseModel):
+    type: Literal["prompt"] = "prompt"
+    seq: int
+    to_act: int
+    deadline: Optional[str] = None
+    legal_actions: List[LegalAction]
+
+
+class HandResult(BaseModel):
+    seat: int
+    delta: int
+
+
+class HandEnd(BaseModel):
+    type: Literal["hand_end"] = "hand_end"
+    hand_id: str
+    results: List[HandResult]
+    next_button_seat: int
+
+
+class ShowdownPlayer(BaseModel):
+    seat: int
+    id: str
+    hole: List[str]
+    in_hand: bool
+
+
+class Showdown(BaseModel):
+    type: Literal["showdown"] = "showdown"
+    hand_id: str
+    board: List[str]
+    players: List[ShowdownPlayer]
+
+
+class SessionEnd(BaseModel):
+    type: Literal["session_end"] = "session_end"
+    reason: str  # "player_busted", "max_hands", "requested"
+
+
+class Error(BaseModel):
+    type: Literal["error"] = "error"
+    message: str
+    trace: Optional[str] = None
+    snapshot: Optional[TableSnapshot] = None
+
+
+class Resume(BaseModel):
+    type: Literal["resume"] = "resume"
+    from_seq: int
+
+
+class Ack(BaseModel):
+    type: Literal["ack"] = "ack"
+    received: Dict[str, Any]
+
+
+# ========== Message Union Type ==========
+
+ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack]
+ClientMessage = Union[ClientAction, Resume]
+
+
+# ========== Validation Utilities ==========
+
+
+def _get_attr(obj: Union[LegalAction, Dict[str, Any]], name: str):
+    if hasattr(obj, name):
+        return getattr(obj, name)
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return None
+
+
+def validate_action_against_legal(
+    action: Union[LegalAction, Dict[str, Any]],
+    legal_actions: List[Union[LegalAction, Dict[str, Any]]],
+) -> bool:
+    """Validate that an action is in the list of legal actions.
+    Accepts either Pydantic models or plain dicts for legal actions.
+    """
+    a_type = _get_attr(action, "type")
+    a_amt = _get_attr(action, "amount")
+    for legal in legal_actions:
+        l_type = _get_attr(legal, "type")
+        if l_type != a_type:
+            continue
+        # For type-only actions, any matching type is valid
+        if a_type in ("check", "fold"):
+            return True
+        # For amount-bearing actions, match amount exactly; keep searching otherwise
+        elif a_type == "call":
+            if a_amt == _get_attr(legal, "amount"):
+                return True
+        elif a_type == "raise_to":
+            l_amt = _get_attr(legal, "amount")
+            if l_amt is not None and a_amt == l_amt:
+                return True
+    return False
+
+
+def is_action_idempotent(action_id: str, processed_actions: set) -> bool:
+    """Check if action_id has already been processed."""
+    return action_id not in processed_actions

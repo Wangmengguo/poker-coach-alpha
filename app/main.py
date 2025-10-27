@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from poker.engine import TableEngine, EngineConfig
+from poker.engine import EngineConfig, TableEngine
+from ws.protocol import ClientAction, Error, validate_action_against_legal
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -54,7 +55,9 @@ manager = ConnectionManager()
 
 # In-memory single table engine for MVP
 DEFAULT_TABLE_ID = "default"
-_engines: Dict[str, TableEngine] = {DEFAULT_TABLE_ID: TableEngine(EngineConfig())}
+_engines: Dict[str, TableEngine] = {
+    DEFAULT_TABLE_ID: TableEngine(EngineConfig(session_id=DEFAULT_TABLE_ID))
+}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -62,7 +65,9 @@ def index() -> HTMLResponse:
     index_path = PUBLIC_DIR / "index.html"
     if index_path.exists():
         return HTMLResponse(index_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Poker Coach Alpha</h1><p>Server running. Add client at public/index.html</p>")
+    return HTMLResponse(
+        "<h1>Poker Coach Alpha</h1><p>Server running. Add client at public/index.html</p>"
+    )
 
 
 @app.post("/tables")
@@ -92,6 +97,7 @@ def start_session(table_id: str):
         # best-effort broadcast
         try:
             import anyio
+
             anyio.from_thread.run(manager.broadcast, table_id, m)
         except Exception:
             pass
@@ -113,7 +119,9 @@ async def ws_table(websocket: WebSocket, table_id: str):
     try:
         engine = _engines.get(table_id)
         if engine and engine.state is not None:
-            await websocket.send_json({"type": "snapshot", "seq": 0, "table": engine.build_table_snapshot()})
+            await websocket.send_json(
+                {"type": "snapshot", "seq": 0, "table": engine.build_table_snapshot()}
+            )
         # Main loop: receive client actions and advance engine
         while True:
             data = await websocket.receive_json()
@@ -121,16 +129,61 @@ async def ws_table(websocket: WebSocket, table_id: str):
                 # Apply and advance
                 engine = _engines.get(table_id)
                 if not engine or engine.state is None:
-                    await websocket.send_json({"type": "error", "message": "table not ready"})
+                    error_msg = Error(message="table not ready")
+                    await websocket.send_json(error_msg.model_dump())
                     continue
-                # Translate client action into engine action
-                action = data.get("action") or {}
+
+                # Validate and parse client action
+                try:
+                    client_action = ClientAction(**data)
+                    action = client_action.action.model_dump(exclude_unset=True)
+
+                    # Check action idempotency
+                    if engine.bot_manager.is_action_processed(client_action.action_id):
+                        continue  # Skip already processed action
+
+                    # Validate against legal actions
+                    legal_actions = engine.legal_actions()
+                    if not validate_action_against_legal(client_action.action, legal_actions):
+                        error_msg = Error(message="illegal action")
+                        await websocket.send_json(error_msg.model_dump())
+                        continue
+
+                    # Mark action as processed for idempotency
+                    engine.bot_manager.add_processed_action(client_action.action_id)
+
+                except Exception as e:
+                    error_msg = Error(message=f"invalid action format: {e}")
+                    await websocket.send_json(error_msg.model_dump())
+                    continue
+
                 try:
                     engine.apply_action(action)
                 except Exception as e:
-                    await websocket.send_json({"type": "error", "message": str(e)})
+                    import traceback as _tb
+
+                    error_msg = Error(
+                        message=f"apply_action failed: {e}", trace=_tb.format_exc(limit=10)
+                    )
+                    await websocket.send_json(error_msg.model_dump())
                     continue
-                msgs, _prompt = engine.advance(human_seat=1)
+                try:
+                    msgs, _prompt = engine.advance(human_seat=1)
+                except Exception as e:
+                    import traceback as _tb
+
+                    # Try to include a snapshot for context
+                    try:
+                        snap = engine.build_table_snapshot()
+                    except Exception:
+                        snap = None
+                    error_msg = Error(
+                        message=f"advance failed: {e}",
+                        trace=_tb.format_exc(limit=20),
+                        snapshot=snap,
+                    )
+                    await websocket.send_json(error_msg.model_dump())
+                    continue
                 for m in msgs:
                     await manager.broadcast(table_id, m)
             else:

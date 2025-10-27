@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -7,24 +9,30 @@ from typing import Dict, List, Optional, Tuple
 from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
 
+from .bot_manager import BotManager
+
 
 def _card_to_str(card) -> str:
     s = str(card)
     return s
 
 
-automations = (
-    Automation.ANTE_POSTING,
-    Automation.BET_COLLECTION,
-    Automation.BLIND_OR_STRADDLE_POSTING,
-    Automation.CARD_BURNING,
-    Automation.HOLE_DEALING,
-    Automation.BOARD_DEALING,
-    Automation.HOLE_CARDS_SHOWING_OR_MUCKING,
-    Automation.HAND_KILLING,
-    Automation.CHIPS_PUSHING,
-    Automation.CHIPS_PULLING,
-)
+# Build automations with graceful fallback across pokerkit versions
+_AUTO_NAMES = [
+    "ANTE_POSTING",
+    "BET_COLLECTION",
+    "BLIND_OR_STRADDLE_POSTING",
+    "CARD_BURNING",
+    "HOLE_DEALING",
+    "BOARD_DEALING",
+    # Ensure all-in runouts proceed automatically when supported
+    "RUNOUT_COUNT_SELECTION",
+    "HOLE_CARDS_SHOWING_OR_MUCKING",
+    "HAND_KILLING",
+    "CHIPS_PUSHING",
+    "CHIPS_PULLING",
+]
+automations = tuple(getattr(Automation, n) for n in _AUTO_NAMES if hasattr(Automation, n))
 
 
 @dataclass
@@ -35,6 +43,7 @@ class EngineConfig:
     starting_stack: int = 400  # chips (≈200bb at 1/2)
     human_seat: int = 1  # 1-indexed
     max_hands: int = 100
+    session_id: str = "default"  # for deterministic RNG
 
 
 class TableEngine:
@@ -43,6 +52,9 @@ class TableEngine:
         self.hand_index = 0
         self.session_active = False
         self.state: Optional[State] = None
+        self.hand_start_stacks: Optional[List[int]] = None
+        self.sequence_number = 0
+        self.bot_manager = BotManager(config.session_id)
         self.player_ids: List[str] = [
             ("human" if i + 1 == self.cfg.human_seat else f"bot{i+1}")
             for i in range(self.cfg.seats)
@@ -51,10 +63,34 @@ class TableEngine:
     def start_session(self) -> None:
         self.session_active = True
         self.hand_index = 0
+        self.sequence_number = 0
         self._start_new_hand()
 
+    def _generate_hand_seed(self) -> int:
+        """Generate deterministic RNG seed for current hand."""
+        key = f"{self.cfg.session_id}_hand_{self.hand_index}".encode("utf-8")
+        # Use HMAC for cryptographically secure deterministic seed
+        secret_key = b"poker_coach_alpha"  # In production, use proper secret
+        hash_digest = hmac.new(secret_key, key, hashlib.sha256).digest()
+        return int.from_bytes(hash_digest[:4], byteorder="big")
+
+    def next_sequence(self) -> int:
+        """Get next sequence number for message ordering."""
+        self.sequence_number += 1
+        return self.sequence_number
+
     def _start_new_hand(self) -> None:
-        stacks = [self.cfg.starting_stack] * self.cfg.seats
+        # Carry stacks forward between hands (cash-game semantics)
+        if self.state is None or not getattr(self.state, "stacks", None):
+            stacks = [self.cfg.starting_stack] * self.cfg.seats
+        else:
+            stacks = [int(s) for s in self.state.stacks]
+            # Rebuy busted seats to starting_stack (pokerkit requires positive starting stacks)
+            stacks = [s if s > 0 else self.cfg.starting_stack for s in stacks]
+
+        # Generate deterministic seed for this hand
+        hand_seed = self._generate_hand_seed()
+
         self.state = NoLimitTexasHoldem.create_state(
             automations,
             False,  # ante trimming off
@@ -65,6 +101,13 @@ class TableEngine:
             self.cfg.seats,
             mode=Mode.CASH_GAME,
         )
+
+        # Set deterministic seed for this hand
+        if hasattr(self.state, "rng") and hasattr(self.state.rng, "seed"):
+            self.state.rng.seed(hand_seed)
+
+        # Record stacks at the start of this hand for delta fallback
+        self.hand_start_stacks = list(self.state.stacks)
         self.hand_index += 1
 
     # ---------- Derived views ----------
@@ -141,6 +184,22 @@ class TableEngine:
         assert self.state is not None
         return not self.state.status
 
+    def should_end_session(self) -> Tuple[bool, str]:
+        """Check if session should end and return reason."""
+        if not self.session_active:
+            return True, "session_inactive"
+
+        if self.hand_index >= self.cfg.max_hands:
+            return True, "max_hands"
+
+        # Check if human player is busted
+        if self.state is not None:
+            human_idx = self.cfg.human_seat - 1
+            if human_idx < len(self.state.stacks) and self.state.stacks[human_idx] <= 0:
+                return True, "player_busted"
+
+        return False, ""
+
     def build_table_snapshot(self) -> Dict:
         assert self.state is not None
         players = []
@@ -161,11 +220,12 @@ class TableEngine:
                     "hole": hole,
                 }
             )
-        # Flatten single board across streets
+        # Flatten full board across streets (include all flop cards)
         board: List[str] = []
         for cards in self.state.board_cards:
             if cards:
-                board.append(_card_to_str(cards[0]))
+                for c in cards:
+                    board.append(_card_to_str(c))
         pot = int(sum(self.state.pot_amounts)) if hasattr(self.state, "pot_amounts") else 0
         bets: Dict[str, int] = {str(i + 1): int(b) for i, b in enumerate(self.state.bets)}
 
@@ -205,17 +265,151 @@ class TableEngine:
         guard = 0
         while True:
             guard += 1
-            if guard > 200:  # safety
+            if guard > 500:  # safety
                 break
             snap = self.build_table_snapshot()
-            messages.append({"type": "snapshot", "seq": guard, "table": snap})
+            seq = self.next_sequence()
+            messages.append({"type": "snapshot", "seq": seq, "table": snap})
+
+            # If no one can act, try to advance automations (deal/runout/showdown)
+            if self.state.turn_index is None and self.state.status:
+                # Keep nudging the engine forward within this tick until either
+                # a player must act or the hand ends. Prefer calling automate/no_operation
+                # repeatedly with a hard cap to avoid infinite loops.
+                inner_guard = 0
+                while self.state.turn_index is None and self.state.status:
+                    inner_guard += 1
+                    if inner_guard > 200:
+                        break
+                    progressed = False
+
+                    # Prefer built-in automation drivers first
+                    for meth in ("automate", "no_operation", "advance"):
+                        fn = getattr(self.state, meth, None)
+                        if callable(fn):
+                            try:
+                                fn()
+                                progressed = True
+                                break
+                            except Exception:
+                                continue
+
+                    # If still not progressed, try stage helpers
+                    if not progressed:
+                        # Try to select single runout (if needed)
+                        sel = getattr(self.state, "select_runout_count", None)
+                        if callable(sel):
+                            try:
+                                sel(1)
+                                progressed = True
+                            except Exception:
+                                pass
+                    if not progressed:
+                        for meth in (
+                            "collect_bets",
+                            "burn_card",
+                            "deal_board_cards",
+                            "deal_board",
+                            "show_or_muck_hole_cards",
+                            "show_hole_cards_or_muck",
+                            "hole_cards_show_or_muck",
+                            "push_chips",
+                            "pull_chips",
+                        ):
+                            fn = getattr(self.state, meth, None)
+                            if callable(fn):
+                                try:
+                                    fn()
+                                    progressed = True
+                                    break
+                                except Exception:
+                                    continue
+
+                    # As a last resort in HoleCardsShowingOrMucking, force show for all
+                    if not progressed and getattr(self.state, "operations", None):
+                        try:
+                            if (
+                                self.state.operations[-1].__class__.__name__
+                                == "HoleCardsShowingOrMucking"
+                            ):
+                                statuses = list(getattr(self.state, "statuses", []) or [])
+                                for i, alive in enumerate(statuses):
+                                    if not alive:
+                                        continue
+                                    for meth in (
+                                        "show_or_muck_hole_cards",
+                                        "show_hole_cards_or_muck",
+                                        "hole_cards_show_or_muck",
+                                    ):
+                                        fn = getattr(self.state, meth, None)
+                                        if callable(fn):
+                                            try:
+                                                fn(i, True)
+                                                progressed = True
+                                                break
+                                            except Exception:
+                                                try:
+                                                    fn(i)
+                                                    progressed = True
+                                                    break
+                                                except Exception:
+                                                    continue
+                                    if progressed:
+                                        break
+                        except Exception:
+                            pass
+
+                    if not progressed:
+                        break
+                # After inner stepping, loop back to emit a fresh snapshot
+                continue
 
             if self.is_hand_over():
-                # hand end payload using payoffs if available
+                # Emit showdown info (full board + revealed holes)
+                try:
+                    board: List[str] = []
+                    for cards in getattr(self.state, "board_cards", []) or []:
+                        for c in cards or []:
+                            board.append(_card_to_str(c))
+                    sd_players = []
+                    for i in range(self.cfg.seats):
+                        sd_players.append(
+                            {
+                                "seat": i + 1,
+                                "id": self.player_ids[i],
+                                "hole": [
+                                    str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
+                                ],
+                                "in_hand": bool(
+                                    getattr(self.state, "statuses", [True] * self.cfg.seats)[i]
+                                ),
+                            }
+                        )
+                    messages.append(
+                        {
+                            "type": "showdown",
+                            "hand_id": f"h_{self.hand_index:05d}",
+                            "board": board,
+                            "players": sd_players,
+                        }
+                    )
+                except Exception:
+                    pass
+
+                # hand end payload using payoffs if available; else compute delta via stacks diff
                 results = []
-                if hasattr(self.state, "payoffs") and self.state.payoffs:
-                    for i, delta in enumerate(self.state.payoffs):
+                payoffs = getattr(self.state, "payoffs", None)
+                if payoffs:
+                    for i, delta in enumerate(payoffs):
                         results.append({"seat": i + 1, "delta": int(delta)})
+                elif self.hand_start_stacks is not None:
+                    try:
+                        for i, (start, end) in enumerate(
+                            zip(self.hand_start_stacks, self.state.stacks)
+                        ):
+                            results.append({"seat": i + 1, "delta": int(end - start)})
+                    except Exception:
+                        results = []
                 messages.append(
                     {
                         "type": "hand_end",
@@ -224,52 +418,65 @@ class TableEngine:
                         "next_button_seat": 1,
                     }
                 )
-                # Start next hand if session active and cap not reached
-                if self.session_active and self.hand_index < self.cfg.max_hands:
+
+                # Check if session should end
+                should_end, end_reason = self.should_end_session()
+                if should_end:
+                    self.session_active = False
+                    messages.append({"type": "session_end", "reason": end_reason})
+                    break
+                else:
+                    # Start next hand
                     self._start_new_hand()
                     continue
-                break
 
             idx = self.state.turn_index
             if idx is None:
-                # Automated stage (deals/collections); loop back to snapshot
+                # Automated stage but no progression method available; loop back to snapshot
                 continue
 
             seat = idx + 1
             if seat == human_seat:
                 # Build prompt
                 la = self.legal_actions()
+                seq = self.next_sequence()
                 prompt = {
                     "type": "prompt",
-                    "seq": guard + 1,
+                    "seq": seq,
                     "to_act": seat,
                     "legal_actions": la,
                 }
                 messages.append(prompt)
                 break
             else:
-                # Bot acts: simple policy
+                # Bot seat - delegate to BotManager
+                # Note: This is sync version, will be made async later
                 la = self.legal_actions()
-                action = None
-                # prefer check > call > min raise > fold
-                for a in la:
-                    if a["type"] == "check":
-                        action = a
+                if self.bot_manager.is_bot_seat(seat):
+                    # For now, use simple bot logic until async integration
+                    action = None
+                    # prefer check > call > min raise > fold
+                    for a in la:
+                        if a["type"] == "check":
+                            action = a
+                            break
+                    if action is None:
+                        for a in la:
+                            if a["type"] == "call":
+                                action = a
+                                break
+                    if action is None:
+                        for a in la:
+                            if a["type"] == "raise_to":
+                                action = a
+                                break
+                    if action is None and la:
+                        action = la[0]
+                    if action is None:
                         break
-                if action is None:
-                    for a in la:
-                        if a["type"] == "call":
-                            action = a
-                            break
-                if action is None:
-                    for a in la:
-                        if a["type"] == "raise_to":
-                            action = a
-                            break
-                if action is None and la:
-                    action = la[0]
-                if action is None:
+                    self.apply_action(action)
+                else:
+                    # Non-bot seat but not human - skip or error
                     break
-                self.apply_action(action)
                 # loop continues
         return messages, prompt

@@ -26,7 +26,7 @@ run: $(VENV)
 	. $(VENV)/bin/activate && uvicorn app.main:app --reload
 
 test: $(VENV)
-	. $(VENV)/bin/activate && pytest -q
+	. $(VENV)/bin/activate && PYTHONPATH=. pytest -q
 
 lint: $(VENV)
 	. $(VENV)/bin/activate && ruff check .

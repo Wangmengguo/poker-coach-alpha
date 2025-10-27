@@ -4,21 +4,90 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Poker Coach Alpha</title>
-    <link rel="stylesheet" href="/public/style.css?v=1" />
+    <link rel="stylesheet" href="/public/style.css?v=2" />
   </head>
   <body>
     <main>
-      <h1>Poker Coach Alpha</h1>
+      <header>
+        <h1>Poker Coach Alpha</h1>
+        <div class="session-info">
+          <span id="handCount">Hand: -</span>
+          <span id="sessionStatus">Not Started</span>
+        </div>
+      </header>
+      
       <div class="controls">
-        <button id="joinBtn">Join</button>
-        <button id="startBtn">Start</button>
+        <button id="joinBtn">Join Table</button>
+        <button id="startBtn">Start Session</button>
+        <button id="reconnectBtn" style="display: none;">Reconnect</button>
       </div>
-      <section class="table">
-        <div id="state"></div>
+      
+      <div class="poker-table">
+        <div class="table-center">
+          <div class="pot-info">
+            <div class="pot-amount" id="potAmount">$0</div>
+            <div class="board" id="board"></div>
+          </div>
+        </div>
+        
+        <div class="seats-container">
+          <div class="seat seat-1" data-seat="1">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+          <div class="seat seat-2" data-seat="2">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+          <div class="seat seat-3" data-seat="3">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+          <div class="seat seat-4" data-seat="4">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+          <div class="seat seat-5" data-seat="5">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+          <div class="seat seat-6" data-seat="6">
+            <div class="player-info">
+              <div class="player-name">Empty</div>
+              <div class="player-stack">$0</div>
+              <div class="player-cards"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="game-controls">
+        <div class="street-info">
+          Street: <span id="streetInfo">-</span>
+        </div>
         <div id="actions" class="actions"></div>
-      </section>
-      <pre id="log"></pre>
+      </div>
+      
+      <div class="log-section">
+        <h3>Game Log</h3>
+        <pre id="log"></pre>
+      </div>
     </main>
-    <script src="/public/app.js?v=1"></script>
+    <script src="/public/app.js?v=2"></script>
   </body>
 </html>

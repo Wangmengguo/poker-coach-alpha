@@ -45,7 +45,11 @@ class TableState:
             hand_id="h_00000",
             players=players,
             to_act=2,
-            legal_actions=[{"type": "fold"}, {"type": "call", "amount": 2}, {"type": "raise", "min": 6, "max": 400}],
+            legal_actions=[
+                {"type": "fold"},
+                {"type": "call", "amount": 2},
+                {"type": "raise", "min": 6, "max": 400},
+            ],
         )
 
     def snapshot(self) -> dict:
