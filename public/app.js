@@ -7,6 +7,7 @@ const potAmountEl = document.getElementById('potAmount');
 const boardEl = document.getElementById('board');
 const streetInfoEl = document.getElementById('streetInfo');
 const reconnectBtn = document.getElementById('reconnectBtn');
+const nextHandBtn = document.getElementById('nextHandBtn');
 
 // State
 let ws;
@@ -47,6 +48,7 @@ function renderPlayers(players, toAct) {
     const seatEl = document.querySelector(`[data-seat="${seat}"]`);
     const playerInfoEl = seatEl.querySelector('.player-info');
     const nameEl = playerInfoEl.querySelector('.player-name');
+    const posEl = playerInfoEl.querySelector('.player-pos');
     const stackEl = playerInfoEl.querySelector('.player-stack');
     const cardsEl = playerInfoEl.querySelector('.player-cards');
     
@@ -56,6 +58,13 @@ function renderPlayers(players, toAct) {
     if (player) {
       nameEl.textContent = player.id;
       stackEl.textContent = `$${player.stack}`;
+      // Position label
+      try {
+        const positions = lastSnapshot?.table?.positions || {};
+        posEl.textContent = positions[String(seat)] || '';
+      } catch (e) {
+        if (posEl) posEl.textContent = '';
+      }
       
       // Update player state classes
       playerInfoEl.classList.toggle('active', toAct === seat);
@@ -74,6 +83,8 @@ function renderPlayers(players, toAct) {
     } else {
       // Empty seat
       nameEl.textContent = 'Empty';
+      const posEl = playerInfoEl.querySelector('.player-pos');
+      if (posEl) posEl.textContent = '';
       stackEl.textContent = '$0';
       cardsEl.innerHTML = '';
       playerInfoEl.classList.remove('active', 'human');
@@ -186,7 +197,8 @@ function handleMessage(msg) {
       const hands = (msg.players || []).map(p => 
         `${p.seat}:${p.id} [${(p.hole || []).join(' ')}]`
       ).join(' | ');
-      log(`Showdown: ${msg.board?.join(' ') || 'no board'} | ${hands}`);
+      const winners = (msg.winners || []).map(w => `Seat ${w.seat} (${w.rank}): [${(w.best5||[]).join(' ')}]`).join(' | ');
+      log(`Showdown: ${msg.board?.join(' ') || 'no board'} | ${hands}${winners ? ' | Winners: ' + winners : ''}`);
       break;
       
     case 'hand_end':
@@ -195,11 +207,13 @@ function handleMessage(msg) {
         `Seat ${r.seat}: ${r.delta >= 0 ? '+' : ''}$${r.delta}`
       ).join(', ');
       log(`Hand complete: ${results}`);
+      if (nextHandBtn) nextHandBtn.style.display = 'inline-block';
       break;
       
     case 'session_end':
       actionsEl.innerHTML = '';
       updateSessionInfo(null, false);
+      if (nextHandBtn) nextHandBtn.style.display = 'none';
       log(`Session ended: ${msg.reason}`);
       break;
       
@@ -219,6 +233,26 @@ function handleMessage(msg) {
 document.getElementById('joinBtn').onclick = join;
 document.getElementById('startBtn').onclick = start;
 reconnectBtn.onclick = connectWS;
+if (nextHandBtn) {
+  nextHandBtn.onclick = async () => {
+    try {
+      nextHandBtn.disabled = true;
+      const res = await fetch('/tables/default/next', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        log(`Cannot start next hand: ${err.error || res.statusText}`);
+      } else {
+        const data = await res.json();
+        log(`Next hand: ${data.hand_id}`);
+      }
+    } catch (e) {
+      log(`Next hand error: ${e}`);
+    } finally {
+      nextHandBtn.disabled = false;
+      nextHandBtn.style.display = 'none';
+    }
+  };
+}
 
 // Initialize
 connectWS();

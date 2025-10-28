@@ -5,6 +5,7 @@ import hmac
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from itertools import combinations
 
 from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
@@ -59,11 +60,14 @@ class TableEngine:
             ("human" if i + 1 == self.cfg.human_seat else f"bot{i+1}")
             for i in range(self.cfg.seats)
         ]
+        # Display/state metadata
+        self.button_seat: int = 1
 
     def start_session(self) -> None:
         self.session_active = True
         self.hand_index = 0
         self.sequence_number = 0
+        self.button_seat = 1
         self._start_new_hand()
 
     def _generate_hand_seed(self) -> int:
@@ -80,13 +84,11 @@ class TableEngine:
         return self.sequence_number
 
     def _start_new_hand(self) -> None:
-        # Carry stacks forward between hands (cash-game semantics)
+        # Determine stacks for new hand; if first hand, initialize to starting stacks
         if self.state is None or not getattr(self.state, "stacks", None):
             stacks = [self.cfg.starting_stack] * self.cfg.seats
         else:
             stacks = [int(s) for s in self.state.stacks]
-            # Rebuy busted seats to starting_stack (pokerkit requires positive starting stacks)
-            stacks = [s if s > 0 else self.cfg.starting_stack for s in stacks]
 
         # Generate deterministic seed for this hand
         hand_seed = self._generate_hand_seed()
@@ -147,23 +149,33 @@ class TableEngine:
             actions.append({"type": "call", "amount": to_call})
             actions.append({"type": "fold"})
 
-        # Candidate raises (validate via simulation)
+        # Pot-based raise candidates (validate via simulation)
         max_bet = max(self.state.bets)
-        min_bet = self._min_bet()
-        candidates = [max_bet + min_bet]
-        # try a couple bigger sizes and all-in
-        candidates.append(max_bet + 2 * min_bet)
-        # all-in as raise-to total bet this street
-        candidates.append(self._max_bet_to(i))
+        # Compute pot amount; include current pot and bets if available
+        try:
+            pot_amt = int(sum(self.state.pot_amounts))  # type: ignore[attr-defined]
+        except Exception:
+            pot_amt = 0
+        fractions = [1 / 3, 1 / 2, 2 / 3, 1.0, 2.0]
+        candidates: List[int] = []
+        for f in fractions:
+            try:
+                target = max_bet + int(round((pot_amt + to_call) * f))
+                candidates.append(target)
+            except Exception:
+                continue
+        # Always consider all-in as a candidate
+        try:
+            candidates.append(self._max_bet_to(i))
+        except Exception:
+            pass
 
         seen = set()
-        for amt in candidates:
+        for amt in sorted(set(candidates)):
             if amt <= max_bet:
                 continue
-            if amt in seen:
-                continue
             if self._try_raise_to(amt):
-                actions.append({"type": "raise_to", "amount": amt})
+                actions.append({"type": "raise_to", "amount": int(amt)})
                 seen.add(amt)
         return actions
 
@@ -192,11 +204,16 @@ class TableEngine:
         if self.hand_index >= self.cfg.max_hands:
             return True, "max_hands"
 
-        # Check if human player is busted
+        # Check stacks if available
         if self.state is not None:
+            stacks = list(self.state.stacks)
             human_idx = self.cfg.human_seat - 1
-            if human_idx < len(self.state.stacks) and self.state.stacks[human_idx] <= 0:
+            if human_idx < len(stacks) and stacks[human_idx] <= 0:
                 return True, "player_busted"
+            # End if all bots are busted (<=0)
+            bot_indices = [i for i in range(self.cfg.seats) if (i + 1) != self.cfg.human_seat]
+            if bot_indices and all(stacks[i] <= 0 for i in bot_indices):
+                return True, "bots_busted"
 
         return False, ""
 
@@ -237,7 +254,7 @@ class TableEngine:
         return {
             "table_id": "default",
             "hand_id": f"h_{self.hand_index:05d}",
-            "button_seat": 1,  # TODO: rotate in later versions
+            "button_seat": self.button_seat,
             "blinds": {"sb": self.cfg.sb, "bb": self.cfg.bb},
             "players": players,
             "street": self._street_name(),
@@ -247,6 +264,7 @@ class TableEngine:
             "to_act": None if to_act is None else to_act + 1,
             "legal_actions": self.legal_actions(),
             "last_op": last_op,
+            "positions": self._positions_map(),
         }
 
     def _street_name(self) -> str:
@@ -255,6 +273,32 @@ class TableEngine:
         if idx is None:
             return "showdown" if not self.state.status else "between"
         return ["preflop", "flop", "turn", "river"][min(idx, 3)]
+
+    def _positions_map(self) -> Dict[str, str]:
+        labels_6max = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
+        pos: Dict[str, str] = {}
+        # Assign positions clockwise starting from button_seat
+        for offset in range(self.cfg.seats):
+            seat = ((self.button_seat - 1 + offset) % self.cfg.seats) + 1
+            label = labels_6max[offset] if offset < len(labels_6max) else f"P{offset}"
+            pos[str(seat)] = label
+        return pos
+
+    def start_next_hand(self) -> Tuple[bool, str]:
+        """Start next hand if session active and not ended.
+        Returns (ok, reason). If not ok, reason explains why.
+        """
+        if not self.session_active:
+            return False, "session_inactive"
+        # Check termination before starting a new hand
+        should_end, reason = self.should_end_session()
+        if should_end:
+            self.session_active = False
+            return False, reason
+        # Rotate button and start new hand
+        self.button_seat = 1 + (self.button_seat % self.cfg.seats)
+        self._start_new_hand()
+        return True, ""
 
     # Advance loop applying bot actions until human prompt or hand end
     def advance(self, human_seat: int) -> Tuple[List[Dict], Optional[Dict]]:
@@ -367,30 +411,40 @@ class TableEngine:
             if self.is_hand_over():
                 # Emit showdown info (full board + revealed holes)
                 try:
-                    board: List[str] = []
+                    board_cards = []
                     for cards in getattr(self.state, "board_cards", []) or []:
                         for c in cards or []:
-                            board.append(_card_to_str(c))
+                            board_cards.append(c)
+                    board_strs = [_card_to_str(c) for c in board_cards]
+
+                    statuses = list(getattr(self.state, "statuses", [True] * self.cfg.seats) or [])
                     sd_players = []
                     for i in range(self.cfg.seats):
+                        in_hand = bool(statuses[i])
+                        if not in_hand:
+                            continue  # hide folded
                         sd_players.append(
                             {
                                 "seat": i + 1,
                                 "id": self.player_ids[i],
-                                "hole": [
-                                    str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
-                                ],
-                                "in_hand": bool(
-                                    getattr(self.state, "statuses", [True] * self.cfg.seats)[i]
-                                ),
+                                "hole": [str(c) for c in getattr(self.state, "hole_cards", [])[i] or []],
+                                "in_hand": in_hand,
                             }
                         )
+
+                    winners_payload: List[Dict] = []
+                    try:
+                        winners_payload = self._compute_showdown_winners(board_cards)
+                    except Exception:
+                        winners_payload = []
+
                     messages.append(
                         {
                             "type": "showdown",
                             "hand_id": f"h_{self.hand_index:05d}",
-                            "board": board,
+                            "board": board_strs,
                             "players": sd_players,
+                            "winners": winners_payload or None,
                         }
                     )
                 except Exception:
@@ -415,7 +469,7 @@ class TableEngine:
                         "type": "hand_end",
                         "hand_id": f"h_{self.hand_index:05d}",
                         "results": results,
-                        "next_button_seat": 1,
+                        "next_button_seat": (1 + (self.button_seat % self.cfg.seats)),
                     }
                 )
 
@@ -424,11 +478,8 @@ class TableEngine:
                 if should_end:
                     self.session_active = False
                     messages.append({"type": "session_end", "reason": end_reason})
-                    break
-                else:
-                    # Start next hand
-                    self._start_new_hand()
-                    continue
+                # Do NOT auto-start next hand; wait for REST /next
+                break
 
             idx = self.state.turn_index
             if idx is None:
@@ -466,10 +517,10 @@ class TableEngine:
                                 action = a
                                 break
                     if action is None:
-                        for a in la:
-                            if a["type"] == "raise_to":
-                                action = a
-                                break
+                        raises = [a for a in la if a.get("type") == "raise_to"]
+                        if raises:
+                            raises.sort(key=lambda a: a.get("amount", 0))
+                            action = raises[0]
                     if action is None and la:
                         action = la[0]
                     if action is None:
@@ -480,3 +531,79 @@ class TableEngine:
                     break
                 # loop continues
         return messages, prompt
+
+    def _compute_showdown_winners(self, board_cards: List) -> List[Dict]:
+        """Compute showdown winners and best-5 using pokerkit when possible.
+        Returns list of {seat, best5, rank} dicts.
+        """
+        assert self.state is not None
+        winners_payload: List[Dict] = []
+
+        # Determine winners primarily from payoffs if available
+        payoffs = getattr(self.state, "payoffs", None)
+        winner_indices: List[int] = []
+        if payoffs is not None:
+            try:
+                max_pay = max(payoffs)
+                if max_pay > 0:
+                    winner_indices = [i for i, d in enumerate(payoffs) if d == max_pay]
+            except Exception:
+                winner_indices = []
+
+        # Helper to stringify 5 cards
+        def to_strs(cards) -> List[str]:
+            try:
+                return [str(c) for c in cards]
+            except Exception:
+                return []
+
+        # Try pokerkit hand evaluation APIs
+        def best5_for_idx(idx: int) -> Tuple[str, List[str]]:
+            seven = list(getattr(self.state, "hole_cards", [])[idx] or []) + list(board_cards)
+            # Attempt to use pokerkit's high-hand utilities; fallback to simple pick
+            try:
+                # Option A: StandardHighHand with best-of-7
+                try:
+                    from pokerkit.hands import StandardHighHand as SHH  # type: ignore
+
+                    best = None
+                    best_rank = None
+                    best_combo = None
+                    for combo in combinations(seven, 5):
+                        h = SHH(combo) if callable(SHH) else SHH.from_cards(combo)  # type: ignore
+                        rank_val = getattr(h, "rank", None) or getattr(h, "value", None)
+                        if best is None or (rank_val is not None and rank_val > best_rank):
+                            best = h
+                            best_rank = rank_val
+                            best_combo = combo
+                    label = getattr(best, "label", None) or getattr(best, "__class__", type("", (), {})).__name__
+                    return str(label) if label else "Best 5", to_strs(best_combo or seven[:5])
+                except Exception:
+                    pass
+                # Option B: StandardLookup
+                try:
+                    from pokerkit.lookups import StandardLookup  # type: ignore
+
+                    best_combo = None
+                    best_entry = None
+                    for combo in combinations(seven, 5):
+                        entry = StandardLookup.lookup(combo)  # type: ignore
+                        if best_entry is None or entry > best_entry:
+                            best_entry = entry
+                            best_combo = combo
+                    rank_name = getattr(best_entry, "label", None) or getattr(best_entry, "name", None) or "Best 5"
+                    return str(rank_name), to_strs(best_combo or seven[:5])
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Fallback: just pick any 5
+            return "Best 5", to_strs(seven[:5])
+
+        for idx in winner_indices:
+            try:
+                rank, best5 = best5_for_idx(idx)
+                winners_payload.append({"seat": idx + 1, "best5": best5, "rank": rank})
+            except Exception:
+                winners_payload.append({"seat": idx + 1, "best5": [], "rank": "Best 5"})
+        return winners_payload

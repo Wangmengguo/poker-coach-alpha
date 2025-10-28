@@ -46,6 +46,7 @@ class TableSnapshot(BaseModel):
     to_act: Optional[int]
     legal_actions: List[LegalAction]
     last_op: Optional[str] = None
+    positions: Optional[Dict[str, str]] = None
 
 
 # ========== WebSocket Message Types ==========
@@ -84,11 +85,18 @@ class ShowdownPlayer(BaseModel):
     in_hand: bool
 
 
+class WinnerInfo(BaseModel):
+    seat: int
+    best5: List[str]
+    rank: str
+
+
 class Showdown(BaseModel):
     type: Literal["showdown"] = "showdown"
     hand_id: str
     board: List[str]
     players: List[ShowdownPlayer]
+    winners: Optional[List[WinnerInfo]] = None
 
 
 class SessionEnd(BaseModel):

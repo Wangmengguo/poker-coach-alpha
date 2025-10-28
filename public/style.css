@@ -38,6 +38,7 @@ button:disabled { background: #0f1c29; color: #666; cursor: not-allowed; }
 .player-info.active { border-color: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, 0.5); }
 .player-info.human { border-color: #3b82f6; }
 .player-name { font-size: 0.8rem; font-weight: bold; margin-bottom: 2px; }
+.player-pos { font-size: 0.7rem; color: #fbbf24; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.03em; }
 .player-stack { font-size: 0.9rem; color: #4ade80; margin-bottom: 4px; }
 .player-cards { display: flex; gap: 2px; justify-content: center; }
 .player-cards .card { background: white; color: black; padding: 2px 3px; border-radius: 2px; font-size: 0.7rem; font-weight: bold; min-width: 16px; text-align: center; }

@@ -1,202 +1,119 @@
-# MVP Implementation Plan
+# Implementation Plan — Real Game MVP updates
 
-## Current State Analysis
+This plan details the concrete changes to deliver a more realistic single-table NLHE experience for MVP.
 
-### ✅ What's Working
-- **FastAPI Backend**: Core server structure with REST endpoints and WebSocket handler (`app/main.py` - 162 lines)
-- **Pokerkit Integration**: Robust engine wrapper with state management (`poker/engine.py` - 406 lines)
-- **Basic Bot Framework**: Simple bot policy implementation (`poker/bots.py` - 29 lines)
-- **WebSocket Protocol**: Pydantic schemas for message validation (`ws/protocol.py` - 27 lines)
-- **Client Foundation**: HTML/JS client with WebSocket connection (`public/index.html`, `public/app.js`)
-- **Virtual Environment**: Working setup with pokerkit and FastAPI dependencies
+Goals (MVP):
+- Pot-based raise options: 1/3, 1/2, 2/3, 1×, 2× pot; enforce min raise; remove 2/4/6 fixed buttons.
+- Showdown: reveal all live hands; compute winners via pokerkit best-5 and include in payload.
+- Rotation: move button each hand; expose position labels per seat (BTN, SB, BB, UTG, MP, CO) to the client.
+- Manual hand progression: a Continue Next Hand button; no auto-advance.
+- Session termination: end when human busts OR all bots bust OR max_hands reached; remove auto-refill behavior.
 
-### ❌ Critical Gaps Identified
+## Protocol and model updates
 
-#### 1. Engine Integration Issues
-**Current State**: `poker/engine.py` has comprehensive pokerkit wrapper but has some issues:
-- Bot actions are embedded in engine advance loop (lines 381-403) instead of using `BotManager`
-- No deterministic RNG per hand implementation
-- Session termination logic exists but not properly tested
+1) Table snapshot
+- Keep existing fields; ensure `button_seat` rotates each hand.
+- Optional: include `positions: {"1":"BTN","2":"SB",...}` for 6-max mapping derived from `button_seat`.
 
-**Evidence**:
-```python
-# From poker/engine.py lines 381-403 - bot logic is inline
-else:
-    # Bot acts: simple policy
-    la = self.legal_actions()
-    action = None
-    # prefer check > call > min raise > fold
-    for a in la:
-        if a["type"] == "check":
-            action = a
-            break
-```
+2) Legal actions
+- Only `check`, `call`, `fold`, and multiple `raise_to` candidates based on pot fractions; no `min/max` range exposure; no fixed +2/+4.
 
-#### 2. WebSocket Protocol Gaps
-**Current State**: Basic Pydantic schemas exist but missing key message types
-- `ws/protocol.py` only has `LegalAction`, `Prompt`, and `ClientAction` classes
-- Missing `HandEnd`, `SessionEnd`, `Snapshot`, `Error` message schemas
-- No action validation or idempotency checking
-- No sequence number tracking for diff-based updates
+3) Showdown message
+- Extend with `winners`:
+  - Showdown.winners: [{ seat: int, best5: [str;5], rank: str }]
+  - Only include seats still in hand (exclude folded).
 
-#### 3. Bot Management Missing
-**Current State**: `poker/bots.py` has `SimpleBot` class but it's not integrated
-- No `BotManager` class to handle bot actions
-- Bot logic is hardcoded in engine instead of using pluggable policies
-- No timing delays for bot actions
+4) Hand flow control
+- No diff/resume for MVP (snapshots only).
+- Add REST: POST /tables/{id}/next → server starts next hand and broadcasts until prompt/hand_end.
 
-#### 4. Client UI Incomplete
-**Current State**: Basic WebSocket connection and message handling exists
-- `public/app.js` has snapshot rendering but very basic (lines 12-16)
-- No proper poker table visualization
-- Action buttons work but UI is minimal
-- No session progress tracking or game status display
+## Backend changes
 
-#### 5. Testing Infrastructure
-**Current State**: Only smoke test exists (`tests/test_smoke.py` - 4 lines)
-- No integration tests for full hand play
-- No WebSocket message testing
-- No bot behavior validation
+Files:
+- poker/engine.py
+- app/main.py
+- ws/protocol.py
 
-#### 6. Missing Core Features
-- No action timeouts or clock system
-- No reconnect mechanism with sequence-based diffs
-- No proper error handling for edge cases
-- No session statistics or hand history
+1) Pot-based raise sizing (poker/engine.py)
+- Replace `legal_actions` raise candidates with pot-fraction targets.
+- Algorithm (for acting index i):
+  - to_call = amount needed to call.
+  - pot = int(sum(state.pot_amounts)) if available, else derive from stacks/bets.
+  - max_bet = max(state.bets).
+  - fractions = [1/3, 1/2, 2/3, 1.0, 2.0]. For each f:
+    - target_to = max_bet + round((pot + to_call) * f)
+    - keep if target_to > max_bet and `_try_raise_to(target_to)` is True.
+  - Always de-dup, sort ascending, and include all-in (`_max_bet_to(i)`) if `_try_raise_to` permits and it’s not already present.
+- Keep min-raise enforcement by relying on `_try_raise_to` validity from pokerkit.
 
-## Implementation Plan
+2) Showdown winners (poker/engine.py)
+- At hand end (when `is_hand_over()`), compute winners before emitting `hand_end`:
+  - Collect live seats (status True at showdown) and their hole cards.
+  - Use pokerkit to evaluate best 5-card hand per seat against the final board.
+    - Preferred: `pokerkit.lookups.StandardLookup` or hold’em hand API to obtain (rank_label, best5_cards).
+  - Determine winner set (handle splits) and append `winners` into the `showdown` payload.
 
-### Phase 1: Core Protocol & Bot Management
-**Priority**: Critical - Foundation for everything else
+3) Rotation and positions (poker/engine.py)
+- Track `button_seat` across hands; on `start_session()` set an initial button (e.g., 1), and on each `_start_new_hand()` advance `(button_seat % seats) + 1`.
+- Add helper to map seats→positions for 6-max ordered as: BTN, SB, BB, UTG, MP, CO.
+- Include `button_seat` in snapshots; optionally include `positions` map.
 
-1. **Enhance WebSocket Protocol** (`ws/protocol.py`)
-   - Add missing message schemas: `Snapshot`, `HandEnd`, `SessionEnd`, `Error`
-   - Implement sequence number tracking
-   - Add action validation utilities
-   - Add idempotency support with `action_id`
+4) No auto-advance; manual next hand
+- Change `advance()` so that after emitting `hand_end` (and possibly `session_end`) it does NOT call `_start_new_hand()`.
+- Add `start_next_hand()` method which:
+  - Validates session is active and not ended; rotates button; creates a new pokerkit state with current stacks; broadcasts initial snapshot/prompt when called.
 
-2. **Create BotManager** (`poker/bots.py`)
-   - Extract bot logic from engine advance loop
-   - Add configurable timing delays
-   - Support pluggable bot policies
-   - Handle bot seat management
+5) Session termination (poker/engine.py)
+- Update `should_end_session()` to return True when:
+  - human stack <= 0, OR
+  - all bot stacks <= 0, OR
+  - hand_index >= max_hands.
+- Remove auto-refill: do not force busted seats back to `starting_stack` inside `_start_new_hand()`.
+  - If continuing with fewer players is required before final bust condition, seats with 0 stack should be excluded from the next state (optional for MVP; we can end session when any seat reaches 0 for simplicity of MVP if needed, but target the spec above).
 
-3. **Update Engine Integration** (`poker/engine.py`)
-   - Remove inline bot logic, delegate to BotManager
-   - Add deterministic RNG with `HMAC(session_id, hand_index)`
-   - Improve session termination conditions
-   - Add proper error handling for edge cases
+6) REST hook to continue (app/main.py)
+- Add POST /tables/{id}/next:
+  - Calls `engine.start_next_hand()`; then runs `engine.advance(human_seat=1)`; broadcasts messages like `/start`.
+  - Returns `{ hand_id }`.
+- Guard: return 400 if session inactive or already ended.
 
-### Phase 2: Client Experience
-**Priority**: High - User-facing functionality
+7) Protocol schemas (ws/protocol.py)
+- Extend `Showdown` Pydantic model with optional `winners: List[{seat:int, best5:List[str], rank:str}]`.
+- Optionally extend `TableSnapshot` with optional `positions: Dict[str,str]` (stringified seat → position label).
 
-4. **Enhance Client UI** (`public/app.js`, `public/index.html`)
-   - Proper poker table visualization with seat positions
-   - Clear game state display (street, pot, stacks)
-   - Improved action buttons with better labeling
-   - Session progress indicator
-   - Error message display
+## Frontend changes
 
-5. **Add Session Management** 
-   - Implement proper reconnect with sequence-based diffs
-   - Handle WebSocket disconnections gracefully
-   - Add session statistics display
+Files:
+- public/index.html
+- public/app.js
+- public/style.css
 
-### Phase 3: Robustness & Testing
-**Priority**: Medium - Quality assurance
+1) Continue Next Hand button
+- Add a header button (id: `nextHandBtn`, label: "Continue Next Hand"). Hidden by default; shown on `hand_end`.
+- On click: POST `/tables/default/next`; disable button until next `prompt/snapshot` arrives.
 
-6. **Comprehensive Testing** (`tests/`)
-   - Integration test for full hand play vs bots
-   - WebSocket message flow testing
-   - Bot behavior validation
-   - Edge case testing (all-ins, side pots, timeouts)
+2) Action buttons
+- Render whatever `legal_actions` the server sends; there will be multiple `raise_to` amounts (no static 2/4/6).
+- Optional: label `raise_to` buttons as `Raise to $X` for MVP; later we can add `(≈ 1/2 pot)` annotations.
 
-7. **Action Timeouts** (`app/main.py`)
-   - Implement 15-second action clock
-   - Auto-fold on timeout
-   - Visual countdown in client
+3) Showdown rendering
+- Log all live hands at showdown; if `winners` present, highlight winners and their best5 and rank.
 
-### Phase 4: Polish & Reliability
-**Priority**: Low - Nice to have
+4) Positions UI
+- Show position badge per seat using `table.positions` or by computing from `button_seat`.
 
-8. **Error Handling & Logging**
-   - Better error messages and recovery
-   - Structured logging for debugging
-   - Graceful degradation for edge cases
+## Tests
 
-9. **Performance & UX**
-   - Message batching optimization
-   - Smoother animations in client
-   - Better mobile responsiveness
+- tests/test_integration.py
+  - Pot-sizing: assert `legal_actions` contains ascending `raise_to` targets for typical states and that `_try_raise_to` accepts them.
+  - Showdown: assert `showdown` message includes all live hands and `winners` is non-empty with 5 cards and rank.
+  - Rotation: across two hands, `button_seat` increments and positions mapping updates.
+  - Continue gating: after `hand_end`, no auto-start; POST `/next` starts new hand.
+  - Session termination: session ends when human stack <= 0 or all bots <= 0 or `max_hands` reached.
 
-## Files to Modify
+## Acceptance
+- The UI offers pot-based raise options; showdown shows all hands; winners and best5 are visible; button rotates; positions are shown; next hand only proceeds via the Continue button; session ends per rules.
 
-### New Files
-- `poker/bot_manager.py` - Bot orchestration and timing
-- `tests/test_integration.py` - Full hand integration tests
-- `tests/test_websocket.py` - WebSocket protocol tests
-
-### Files to Enhance
-- `ws/protocol.py` - Add missing message schemas (expand from 27 to ~80 lines)
-- `poker/engine.py` - Remove bot logic, add RNG, improve error handling (~50 line changes)
-- `poker/bots.py` - Keep SimpleBot, add BotManager integration (expand to ~60 lines)
-- `app/main.py` - Add timeout handling, improve error responses (~30 line changes)
-- `public/app.js` - Major UI enhancements (expand from 83 to ~150 lines)
-- `public/index.html` - Add proper table layout (expand from 24 to ~40 lines)
-- `public/style.css` - Add table visualization styles (expand significantly)
-
-## Current Progress (UPDATED)
-
-### ✅ COMPLETED - Core MVP Functionality
-1. ✅ **WebSocket Protocol Enhanced** - All message schemas implemented (Snapshot, HandEnd, SessionEnd, Error, etc.)
-2. ✅ **BotManager Created** - Pluggable bot policies with timing delays and different strategies
-3. ✅ **Engine Integration Updated** - Deterministic RNG per hand, proper session management
-4. ✅ **Client UI Enhanced** - Professional poker table visualization, improved action buttons
-5. ✅ **Core Testing** - Integration tests verify engine, bot manager, and protocol functionality
-6. ✅ **Pydantic v2 Compatible** - All message schemas use modern Pydantic patterns
-7. ✅ **Action Validation** - Idempotent actions with proper validation against legal moves
-
-### 🔄 REMAINING (Optional Enhancements)
-- ⚠️ **Session Management** - Reconnect with sequence-based diffs (partially implemented)
-- ⚠️ **Action Timeouts** - 15-second clock with auto-fold (engine ready, needs WebSocket integration)
-- ⚠️ **Polish & Reliability** - Enhanced error handling and logging
-
-## Success Criteria
-
-### MVP Complete When:
-1. ✅ Human can join table and play full hands vs 5 bots - **READY**
-2. ✅ Bots make reasonable decisions using legal actions - **WORKING** 
-3. ✅ WebSocket handles all message types correctly - **IMPLEMENTED**
-4. ✅ Session ends properly on bust or max hands - **IMPLEMENTED**
-5. ✅ Client shows clear game state and allows actions - **IMPLEMENTED**
-6. ✅ Integration test passes for scripted full hand - **PASSING**
-7. ⚠️ Action timeouts work (15s auto-fold) - **INFRASTRUCTURE READY**
-8. ⚠️ Reconnect works with proper state sync - **PARTIALLY IMPLEMENTED**
-
-### Technical Requirements Met:
-- All message types from PLAN.md implemented
-- Deterministic RNG per hand
-- Idempotent actions with action_id
-- Bot policies extracted from engine
-- Clean separation of concerns
-- Basic test coverage (>80% for new modules)
-
-## Estimated Effort
-- **Phase 1**: 6-8 hours (critical path)
-- **Phase 2**: 4-6 hours (user experience)
-- **Phase 3**: 4-5 hours (quality)  
-- **Phase 4**: 2-3 hours (polish)
-
-**Total**: 16-22 hours to complete MVP
-
-## Dependencies
-- Current pokerkit integration is solid
-- FastAPI WebSocket handling works
-- Virtual environment is properly configured
-- All core dependencies are installed
-
-## Risk Factors
-1. **Pokerkit Edge Cases**: Complex all-in scenarios or side pots may need debugging
-2. **WebSocket Reliability**: Need robust error handling for connection issues
-3. **Bot Timing**: May need fine-tuning for realistic game flow
-4. **Client State Sync**: Reconnect logic requires careful sequence management
+## Notes / Risks
+- pokerkit best-5 API surface may vary by version: isolate winner computation in a helper with try/fallbacks.
+- If pokerkit requires positive stacks for state creation, ensure we don’t start a new hand when a termination condition is met (eliminates need to represent 0-stack seats in MVP).

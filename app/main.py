@@ -104,6 +104,29 @@ def start_session(table_id: str):
     return {"hand_id": f"h_{engine.hand_index:05d}"}
 
 
+@app.post("/tables/{table_id}/next")
+def next_hand(table_id: str):
+    engine = _engines.get(table_id)
+    if not engine or engine.state is None:
+        return JSONResponse(status_code=404, content={"error": "table not found"})
+    ok, reason = engine.start_next_hand()
+    if not ok:
+        if reason:
+            # If session ended, notify caller
+            return JSONResponse(status_code=400, content={"error": reason})
+        return JSONResponse(status_code=400, content={"error": "cannot start next hand"})
+    # Advance and broadcast
+    messages, _ = engine.advance(human_seat=1)
+    for m in messages:
+        try:
+            import anyio
+
+            anyio.from_thread.run(manager.broadcast, table_id, m)
+        except Exception:
+            pass
+    return {"hand_id": f"h_{engine.hand_index:05d}"}
+
+
 @app.get("/tables/{table_id}/state")
 def get_state(table_id: str):
     engine = _engines.get(table_id)
