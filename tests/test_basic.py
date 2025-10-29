@@ -151,6 +151,30 @@ def test_game_flow_simulation():
     print("✅ Game flow simulation passed")
 
 
+def test_bust_logic_and_next_hand():
+    """Ensure next hand works when some bots are busted, and session ends only when all bots are busted or human busts."""
+    config = EngineConfig(session_id="bust_logic_test", max_hands=10)
+    engine = TableEngine(config)
+    engine.start_session()
+    # Simulate two bots busted (seats 2 and 3)
+    engine.seat_stacks[1] = 0
+    engine.seat_stacks[2] = 0
+    ok, reason = engine.start_next_hand()
+    assert ok, f"Should allow next hand when some bots busted, got: {reason}"
+
+    # Simulate all bots busted
+    for i in range(engine.cfg.seats):
+        if (i + 1) != engine.cfg.human_seat:
+            engine.seat_stacks[i] = 0
+    should_end, reason = engine.should_end_session()
+    assert should_end and reason == "bots_busted"
+
+    # Simulate human busted
+    engine.seat_stacks = [0] * engine.cfg.seats
+    should_end, reason = engine.should_end_session()
+    assert should_end and reason == "player_busted"
+
+
 if __name__ == "__main__":
     test_engine_basic()
     test_bot_manager()

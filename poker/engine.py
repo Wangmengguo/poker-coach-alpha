@@ -4,8 +4,8 @@ import hashlib
 import hmac
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 from itertools import combinations
+from typing import Dict, List, Optional, Tuple
 
 from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
@@ -53,7 +53,11 @@ class TableEngine:
         self.hand_index = 0
         self.session_active = False
         self.state: Optional[State] = None
-        self.hand_start_stacks: Optional[List[int]] = None
+        # Stacks per original seat (0-indexed internally). Persist across hands.
+        self.seat_stacks: List[int] = [self.cfg.starting_stack] * self.cfg.seats
+        # Active-seat mapping for current hand: state index -> original seat index
+        self.seat_map_active: List[int] = list(range(self.cfg.seats))
+        self.hand_start_seat_stacks: Optional[List[int]] = None
         self.sequence_number = 0
         self.bot_manager = BotManager(config.session_id)
         self.player_ids: List[str] = [
@@ -64,11 +68,21 @@ class TableEngine:
         self.button_seat: int = 1
 
     def start_session(self) -> None:
+        # Reset session state
         self.session_active = True
         self.hand_index = 0
         self.sequence_number = 0
         self.button_seat = 1
+        self.seat_stacks = [self.cfg.starting_stack] * self.cfg.seats
+        # Start the first hand
         self._start_new_hand()
+
+    def restart_session(self, new_session_id: Optional[str] = None) -> None:
+        """Restart a fresh session with initial stacks and optional new session id."""
+        if new_session_id:
+            self.cfg.session_id = new_session_id
+            self.bot_manager.reset_for_new_session(new_session_id)
+        self.start_session()
 
     def _generate_hand_seed(self) -> int:
         """Generate deterministic RNG seed for current hand."""
@@ -83,16 +97,64 @@ class TableEngine:
         self.sequence_number += 1
         return self.sequence_number
 
+    # ---------- Seating helpers ----------
+    def _active_seats(self) -> List[int]:
+        """List of seat indices (0-based) with positive stacks."""
+        return [i for i, s in enumerate(self.seat_stacks) if s > 0]
+
+    def _rotate_to_button(self, seats: List[int], button_seat: int) -> List[int]:
+        """Rotate seats so that the first element equals button_seat (1-based)."""
+        if not seats:
+            return []
+        btn_idx0 = button_seat - 1
+        if btn_idx0 not in seats:
+            # If button seat is busted, move button to the next active seat clockwise
+            # Find the minimal positive distance clockwise
+            if seats:
+                # choose the first seat with index >= btn_idx0, else wrap to first
+                after = [s for s in seats if s >= btn_idx0]
+                btn_idx0 = after[0] if after else seats[0]
+        # Rotate so that btn_idx0 is first
+        k = seats.index(btn_idx0)
+        return seats[k:] + seats[:k]
+
+    def _next_active_seat(self, cur_button_seat: int) -> int:
+        """Return next button seat (1-based) skipping busted seats."""
+        if not any(s > 0 for s in self.seat_stacks):
+            return cur_button_seat
+        # Move at least one step forward
+        for step in range(1, self.cfg.seats + 1):
+            seat = ((cur_button_seat - 1 + step) % self.cfg.seats) + 1
+            if self.seat_stacks[seat - 1] > 0:
+                return seat
+        return cur_button_seat
+
+    def _seat_to_state_index(self, seat: int) -> Optional[int]:
+        """Map original seat (1-based) to current state index, if active."""
+        try:
+            return self.seat_map_active.index(seat - 1)
+        except ValueError:
+            return None
+
+    def _state_index_to_seat(self, idx: int) -> int:
+        """Map current state index to original seat (1-based)."""
+        return self.seat_map_active[idx] + 1
+
     def _start_new_hand(self) -> None:
-        # Determine stacks for new hand; if first hand, initialize to starting stacks
-        if self.state is None or not getattr(self.state, "stacks", None):
-            stacks = [self.cfg.starting_stack] * self.cfg.seats
-        else:
-            stacks = [int(s) for s in self.state.stacks]
+        # Build active seating order for this hand starting from button
+        active = self._active_seats()
+        # If fewer than 2 active players, don't start a new hand here; let caller handle end
+        if len(active) < 2:
+            self.state = None
+            return
+
+        self.seat_map_active = self._rotate_to_button(active, self.button_seat)
+        stacks = [int(self.seat_stacks[s]) for s in self.seat_map_active]
 
         # Generate deterministic seed for this hand
         hand_seed = self._generate_hand_seed()
 
+        # Create state with only active players
         self.state = NoLimitTexasHoldem.create_state(
             automations,
             False,  # ante trimming off
@@ -100,7 +162,7 @@ class TableEngine:
             (self.cfg.sb, self.cfg.bb),  # blinds
             self.cfg.bb,  # min bet equals big blind for NLHE
             stacks,
-            self.cfg.seats,
+            len(stacks),
             mode=Mode.CASH_GAME,
         )
 
@@ -108,8 +170,8 @@ class TableEngine:
         if hasattr(self.state, "rng") and hasattr(self.state.rng, "seed"):
             self.state.rng.seed(hand_seed)
 
-        # Record stacks at the start of this hand for delta fallback
-        self.hand_start_stacks = list(self.state.stacks)
+        # Record seat stacks snapshot at hand start
+        self.hand_start_seat_stacks = list(self.seat_stacks)
         self.hand_index += 1
 
     # ---------- Derived views ----------
@@ -204,39 +266,69 @@ class TableEngine:
         if self.hand_index >= self.cfg.max_hands:
             return True, "max_hands"
 
-        # Check stacks if available
-        if self.state is not None:
-            stacks = list(self.state.stacks)
-            human_idx = self.cfg.human_seat - 1
-            if human_idx < len(stacks) and stacks[human_idx] <= 0:
-                return True, "player_busted"
-            # End if all bots are busted (<=0)
-            bot_indices = [i for i in range(self.cfg.seats) if (i + 1) != self.cfg.human_seat]
-            if bot_indices and all(stacks[i] <= 0 for i in bot_indices):
-                return True, "bots_busted"
+        # Use persistent seat_stacks to decide bust status
+        stacks = list(self.seat_stacks)
+        human_idx = self.cfg.human_seat - 1
+        if 0 <= human_idx < len(stacks) and stacks[human_idx] <= 0:
+            return True, "player_busted"
+
+        # End if all bots are busted (<=0)
+        bot_indices = [i for i in range(self.cfg.seats) if (i + 1) != self.cfg.human_seat]
+        if bot_indices and all(stacks[i] <= 0 for i in bot_indices):
+            return True, "bots_busted"
+
+        # Also stop if fewer than 2 active players remain
+        if sum(1 for s in stacks if s > 0) < 2:
+            # Should have been caught by bots_busted or player_busted above, but keep safe
+            return True, "insufficient_players"
 
         return False, ""
 
     def build_table_snapshot(self) -> Dict:
         assert self.state is not None
-        players = []
-        for idx in self.state.player_indices:
-            # Hole cards perspective: human sees own holes fully; others show up cards only
-            if (idx + 1) == self.cfg.human_seat:
-                hole = [str(c) for c in self.state.hole_cards[idx]]
+        # Build lookup from state index -> seat number
+        seat_lookup: Dict[int, int] = {
+            i: self._state_index_to_seat(i) for i in range(len(self.seat_map_active))
+        }
+
+        # Players payload in fixed seat order 1..seats
+        players: List[Dict] = []
+        statuses = list(getattr(self.state, "statuses", []) or [])
+        hole_cards = list(getattr(self.state, "hole_cards", []) or [])
+        hole_statuses = list(getattr(self.state, "hole_card_statuses", []) or [])
+
+        for seat in range(1, self.cfg.seats + 1):
+            state_idx = self._seat_to_state_index(seat)
+            if state_idx is not None:
+                # Active seat in this hand
+                is_human = seat == self.cfg.human_seat
+                if is_human:
+                    hole = [str(c) for c in (hole_cards[state_idx] or [])]
+                else:
+                    hole = []
+                    for c, up in zip(hole_cards[state_idx] or [], hole_statuses[state_idx] or []):
+                        hole.append(str(c) if up else "??")
+                players.append(
+                    {
+                        "seat": seat,
+                        "id": self.player_ids[seat - 1],
+                        "stack": int(self.state.stacks[state_idx]),
+                        "in_hand": bool(statuses[state_idx]) if state_idx < len(statuses) else True,
+                        "hole": hole,
+                    }
+                )
             else:
-                hole = []
-                for c, up in zip(self.state.hole_cards[idx], self.state.hole_card_statuses[idx]):
-                    hole.append(str(c) if up else "??")
-            players.append(
-                {
-                    "seat": idx + 1,
-                    "id": self.player_ids[idx],
-                    "stack": int(self.state.stacks[idx]),
-                    "in_hand": bool(self.state.statuses[idx]),
-                    "hole": hole,
-                }
-            )
+                # Busted seat (not in current hand)
+                players.append(
+                    {
+                        "seat": seat,
+                        "id": self.player_ids[seat - 1],
+                        "stack": int(self.seat_stacks[seat - 1]),
+                        "in_hand": False,
+                        "hole": [],
+                    }
+                )
+
         # Flatten full board across streets (include all flop cards)
         board: List[str] = []
         for cards in self.state.board_cards:
@@ -244,9 +336,15 @@ class TableEngine:
                 for c in cards:
                     board.append(_card_to_str(c))
         pot = int(sum(self.state.pot_amounts)) if hasattr(self.state, "pot_amounts") else 0
-        bets: Dict[str, int] = {str(i + 1): int(b) for i, b in enumerate(self.state.bets)}
 
-        to_act = self.state.turn_index
+        # Bets keyed by seat number
+        bets: Dict[str, int] = {}
+        for i, b in enumerate(self.state.bets):
+            bets[str(seat_lookup.get(i, i + 1))] = int(b)
+
+        to_act_state_idx = self.state.turn_index
+        to_act_seat = None if to_act_state_idx is None else seat_lookup.get(to_act_state_idx)
+
         last_op = None
         if getattr(self.state, "operations", None):
             op = self.state.operations[-1]
@@ -261,7 +359,7 @@ class TableEngine:
             "board": board,
             "pot": pot,
             "bets": bets,
-            "to_act": None if to_act is None else to_act + 1,
+            "to_act": to_act_seat,
             "legal_actions": self.legal_actions(),
             "last_op": last_op,
             "positions": self._positions_map(),
@@ -295,9 +393,14 @@ class TableEngine:
         if should_end:
             self.session_active = False
             return False, reason
-        # Rotate button and start new hand
-        self.button_seat = 1 + (self.button_seat % self.cfg.seats)
+
+        # Rotate button to next active seat and start new hand
+        self.button_seat = self._next_active_seat(self.button_seat)
         self._start_new_hand()
+        if self.state is None:
+            # Could not start due to insufficient players
+            self.session_active = False
+            return False, "insufficient_players"
         return True, ""
 
     # Advance loop applying bot actions until human prompt or hand end
@@ -417,17 +520,22 @@ class TableEngine:
                             board_cards.append(c)
                     board_strs = [_card_to_str(c) for c in board_cards]
 
-                    statuses = list(getattr(self.state, "statuses", [True] * self.cfg.seats) or [])
+                    statuses = list(
+                        getattr(self.state, "statuses", [True] * len(self.seat_map_active)) or []
+                    )
                     sd_players = []
-                    for i in range(self.cfg.seats):
+                    for i in range(len(self.seat_map_active)):
                         in_hand = bool(statuses[i])
                         if not in_hand:
                             continue  # hide folded
+                        seat_num = self._state_index_to_seat(i)
                         sd_players.append(
                             {
-                                "seat": i + 1,
-                                "id": self.player_ids[i],
-                                "hole": [str(c) for c in getattr(self.state, "hole_cards", [])[i] or []],
+                                "seat": seat_num,
+                                "id": self.player_ids[seat_num - 1],
+                                "hole": [
+                                    str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
+                                ],
                                 "in_hand": in_hand,
                             }
                         )
@@ -435,6 +543,9 @@ class TableEngine:
                     winners_payload: List[Dict] = []
                     try:
                         winners_payload = self._compute_showdown_winners(board_cards)
+                        # Remap winner seats to original seat numbers
+                        for w in winners_payload:
+                            w["seat"] = self._state_index_to_seat(w["seat"] - 1)
                     except Exception:
                         winners_payload = []
 
@@ -450,18 +561,27 @@ class TableEngine:
                 except Exception:
                     pass
 
-                # hand end payload using payoffs if available; else compute delta via stacks diff
+                # Update persistent seat stacks from state result
+                try:
+                    for i, s in enumerate(self.state.stacks):
+                        seat_num = self._state_index_to_seat(i)
+                        self.seat_stacks[seat_num - 1] = int(s)
+                except Exception:
+                    pass
+
+                # hand end payload using payoffs if available; else compute delta via seat_stacks diff
                 results = []
                 payoffs = getattr(self.state, "payoffs", None)
                 if payoffs:
                     for i, delta in enumerate(payoffs):
-                        results.append({"seat": i + 1, "delta": int(delta)})
-                elif self.hand_start_stacks is not None:
+                        seat_num = self._state_index_to_seat(i)
+                        results.append({"seat": seat_num, "delta": int(delta)})
+                elif self.hand_start_seat_stacks is not None:
                     try:
-                        for i, (start, end) in enumerate(
-                            zip(self.hand_start_stacks, self.state.stacks)
-                        ):
-                            results.append({"seat": i + 1, "delta": int(end - start)})
+                        for i, end_stack in enumerate(self.state.stacks):
+                            seat_num = self._state_index_to_seat(i)
+                            start = self.hand_start_seat_stacks[seat_num - 1]
+                            results.append({"seat": seat_num, "delta": int(end_stack - start)})
                     except Exception:
                         results = []
                 messages.append(
@@ -469,7 +589,7 @@ class TableEngine:
                         "type": "hand_end",
                         "hand_id": f"h_{self.hand_index:05d}",
                         "results": results,
-                        "next_button_seat": (1 + (self.button_seat % self.cfg.seats)),
+                        "next_button_seat": self._next_active_seat(self.button_seat),
                     }
                 )
 
@@ -486,7 +606,7 @@ class TableEngine:
                 # Automated stage but no progression method available; loop back to snapshot
                 continue
 
-            seat = idx + 1
+            seat = self._state_index_to_seat(idx)
             if seat == human_seat:
                 # Build prompt
                 la = self.legal_actions()
@@ -576,7 +696,10 @@ class TableEngine:
                             best = h
                             best_rank = rank_val
                             best_combo = combo
-                    label = getattr(best, "label", None) or getattr(best, "__class__", type("", (), {})).__name__
+                    label = (
+                        getattr(best, "label", None)
+                        or getattr(best, "__class__", type("", (), {})).__name__
+                    )
                     return str(label) if label else "Best 5", to_strs(best_combo or seven[:5])
                 except Exception:
                     pass
@@ -591,7 +714,11 @@ class TableEngine:
                         if best_entry is None or entry > best_entry:
                             best_entry = entry
                             best_combo = combo
-                    rank_name = getattr(best_entry, "label", None) or getattr(best_entry, "name", None) or "Best 5"
+                    rank_name = (
+                        getattr(best_entry, "label", None)
+                        or getattr(best_entry, "name", None)
+                        or "Best 5"
+                    )
                     return str(rank_name), to_strs(best_combo or seven[:5])
                 except Exception:
                     pass

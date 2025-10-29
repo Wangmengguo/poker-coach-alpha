@@ -112,7 +112,7 @@ def next_hand(table_id: str):
     ok, reason = engine.start_next_hand()
     if not ok:
         if reason:
-            # If session ended, notify caller
+            # If session ended or cannot proceed, notify caller
             return JSONResponse(status_code=400, content={"error": reason})
         return JSONResponse(status_code=400, content={"error": "cannot start next hand"})
     # Advance and broadcast
@@ -134,6 +134,25 @@ def get_state(table_id: str):
         return JSONResponse(status_code=404, content={"error": "table not found"})
     snap = engine.build_table_snapshot()
     return {"type": "snapshot", "seq": 0, "table": snap}
+
+
+@app.post("/tables/{table_id}/restart")
+def restart_session(table_id: str):
+    engine = _engines.get(table_id)
+    if not engine:
+        return JSONResponse(status_code=404, content={"error": "table not found"})
+    # Restart fresh session (keep same session_id)
+    engine.restart_session()
+    # Advance until prompt or hand end and broadcast
+    messages, _ = engine.advance(human_seat=1)
+    for m in messages:
+        try:
+            import anyio
+
+            anyio.from_thread.run(manager.broadcast, table_id, m)
+        except Exception:
+            pass
+    return {"hand_id": f"h_{engine.hand_index:05d}"}
 
 
 @app.websocket("/ws/tables/{table_id}")

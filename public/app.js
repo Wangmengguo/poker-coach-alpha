@@ -8,6 +8,7 @@ const boardEl = document.getElementById('board');
 const streetInfoEl = document.getElementById('streetInfo');
 const reconnectBtn = document.getElementById('reconnectBtn');
 const nextHandBtn = document.getElementById('nextHandBtn');
+const restartBtn = document.getElementById('restartBtn');
 
 // State
 let ws;
@@ -26,6 +27,7 @@ function updateSessionInfo(handId, sessionActive) {
   handCountEl.textContent = `Hand: ${handNum}`;
   sessionStatusEl.textContent = sessionActive ? 'Playing' : 'Waiting';
   sessionStatusEl.style.color = sessionActive ? '#4ade80' : '#94a3b8';
+  if (restartBtn) restartBtn.style.display = sessionActive ? 'none' : 'inline-block';
 }
 
 function renderPotAndBoard(pot, board, street) {
@@ -214,6 +216,7 @@ function handleMessage(msg) {
       actionsEl.innerHTML = '';
       updateSessionInfo(null, false);
       if (nextHandBtn) nextHandBtn.style.display = 'none';
+      if (restartBtn) restartBtn.style.display = 'inline-block';
       log(`Session ended: ${msg.reason}`);
       break;
       
@@ -250,6 +253,27 @@ if (nextHandBtn) {
     } finally {
       nextHandBtn.disabled = false;
       nextHandBtn.style.display = 'none';
+    }
+  };
+}
+if (restartBtn) {
+  restartBtn.onclick = async () => {
+    try {
+      restartBtn.disabled = true;
+      const res = await fetch('/tables/default/restart', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        log(`Restart failed: ${err.error || res.statusText}`);
+      } else {
+        const data = await res.json();
+        log(`Session restarted: ${data.hand_id}`);
+        if (nextHandBtn) nextHandBtn.style.display = 'none';
+        restartBtn.style.display = 'none';
+      }
+    } catch (e) {
+      log(`Restart error: ${e}`);
+    } finally {
+      restartBtn.disabled = false;
     }
   };
 }
