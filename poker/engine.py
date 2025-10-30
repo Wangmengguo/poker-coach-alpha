@@ -148,7 +148,12 @@ class TableEngine:
             self.state = None
             return
 
-        self.seat_map_active = self._rotate_to_button(active, self.button_seat)
+        # Rotate seats so SB is first for pokerkit's expected ordering (SB, BB, ...)
+        order_btn_first = self._rotate_to_button(active, self.button_seat)
+        if order_btn_first:
+            self.seat_map_active = order_btn_first[1:] + order_btn_first[:1]
+        else:
+            self.seat_map_active = []
         stacks = [int(self.seat_stacks[s]) for s in self.seat_map_active]
 
         # Generate deterministic seed for this hand

@@ -53,6 +53,7 @@ function renderPlayers(players, toAct) {
     const posEl = playerInfoEl.querySelector('.player-pos');
     const stackEl = playerInfoEl.querySelector('.player-stack');
     const cardsEl = playerInfoEl.querySelector('.player-cards');
+    const betEl = playerInfoEl.querySelector('.player-bet');
     
     // Find player for this seat
     const player = players.find(p => p.seat === seat);
@@ -82,6 +83,19 @@ function renderPlayers(players, toAct) {
           cardsEl.appendChild(cardEl);
         });
       }
+      
+      // Render current bet (chips in front)
+      const bets = (lastSnapshot?.table?.bets) || {};
+      const betAmt = parseInt(bets[String(seat)] || 0, 10);
+      if (betEl) {
+        if (betAmt > 0) {
+          betEl.textContent = `$${betAmt}`;
+          betEl.classList.add('show');
+        } else {
+          betEl.textContent = '';
+          betEl.classList.remove('show');
+        }
+      }
     } else {
       // Empty seat
       nameEl.textContent = 'Empty';
@@ -89,6 +103,7 @@ function renderPlayers(players, toAct) {
       if (posEl) posEl.textContent = '';
       stackEl.textContent = '$0';
       cardsEl.innerHTML = '';
+      if (betEl) { betEl.textContent = ''; betEl.classList.remove('show'); }
       playerInfoEl.classList.remove('active', 'human');
     }
   }

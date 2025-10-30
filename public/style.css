@@ -43,6 +43,8 @@ button:disabled { background: #0f1c29; color: #666; cursor: not-allowed; }
 .player-cards { display: flex; gap: 2px; justify-content: center; }
 .player-cards .card { background: white; color: black; padding: 2px 3px; border-radius: 2px; font-size: 0.7rem; font-weight: bold; min-width: 16px; text-align: center; }
 .player-cards .card.hidden { background: #2d4a3d; color: transparent; }
+.player-bet { display: none; margin-top: 4px; font-size: 0.8rem; background: #22374b; border: 1px solid #2f4863; color: #fbbf24; padding: 2px 8px; border-radius: 999px; width: fit-content; margin-left: auto; margin-right: auto; }
+.player-bet.show { display: inline-block; }
 
 /* Game controls */
 .game-controls { margin-bottom: 20px; text-align: center; }
