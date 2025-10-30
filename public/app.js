@@ -9,6 +9,7 @@ const streetInfoEl = document.getElementById('streetInfo');
 const reconnectBtn = document.getElementById('reconnectBtn');
 const nextHandBtn = document.getElementById('nextHandBtn');
 const restartBtn = document.getElementById('restartBtn');
+const showdownSummaryEl = document.getElementById('showdownSummary');
 
 // State
 let ws;
@@ -55,6 +56,9 @@ function renderPlayers(players, toAct) {
     const cardsEl = playerInfoEl.querySelector('.player-cards');
     const betEl = playerInfoEl.querySelector('.player-bet');
     
+    // Clean showdown classes on fresh render
+    playerInfoEl.classList.remove('winner', 'loser');
+
     // Find player for this seat
     const player = players.find(p => p.seat === seat);
     
@@ -113,6 +117,8 @@ function renderState(table) {
   updateSessionInfo(table.hand_id, true);
   renderPotAndBoard(table.pot, table.board, table.street);
   renderPlayers(table.players, table.to_act);
+  // Hide any prior showdown summary when new snapshot arrives
+  if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
 }
 
 function renderActions(legal) {
@@ -232,6 +238,53 @@ async function start() {
   log(`Session started, hand_id=${data.hand_id}`);
 }
 
+function highlightShowdown(msg) {
+  // Update board from showdown payload
+  renderPotAndBoard(potAmountEl.textContent.replace('$','') || 0, msg.board || [], 'showdown');
+
+  // Reveal showdown hands at seats and mark winners/losers
+  const sdPlayers = msg.players || [];
+  const winnerSeats = new Set((msg.winners || []).map(w => w.seat));
+
+  // First, clear winner/loser classes
+  for (let seat = 1; seat <= 6; seat++) {
+    const seatEl = document.querySelector(`[data-seat="${seat}"]`);
+    const playerInfoEl = seatEl.querySelector('.player-info');
+    playerInfoEl.classList.remove('winner', 'loser');
+  }
+
+  // Update cards and add classes
+  for (const p of sdPlayers) {
+    const seatEl = document.querySelector(`[data-seat="${p.seat}"]`);
+    if (!seatEl) continue;
+    const playerInfoEl = seatEl.querySelector('.player-info');
+    const cardsEl = playerInfoEl.querySelector('.player-cards');
+    cardsEl.innerHTML = '';
+    (p.hole || []).forEach(card => {
+      const cardEl = document.createElement('div');
+      cardEl.className = 'card';
+      cardEl.textContent = card;
+      cardsEl.appendChild(cardEl);
+    });
+    if (winnerSeats.has(p.seat)) {
+      playerInfoEl.classList.add('winner');
+    } else {
+      playerInfoEl.classList.add('loser');
+    }
+  }
+
+  // Build and show summary panel
+  if (showdownSummaryEl) {
+    const winnersTxt = (msg.winners || []).map(w => `Seat ${w.seat} (${w.rank})`).join(', ');
+    const losersTxt = sdPlayers.filter(p => !winnerSeats.has(p.seat)).map(p => `Seat ${p.seat} [${(p.hole||[]).join(' ')}]`).join(' | ');
+    showdownSummaryEl.innerHTML = `
+      <div class="winners">${winnersTxt ? 'Winners: ' + winnersTxt : 'Showdown'}</div>
+      ${losersTxt ? `<div class="losers">Losers: ${losersTxt}</div>` : ''}
+    `;
+    showdownSummaryEl.style.display = 'block';
+  }
+}
+
 function connectWS() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     return; // Already connected
@@ -284,6 +337,7 @@ function handleMessage(msg) {
       ).join(' | ');
       const winners = (msg.winners || []).map(w => `Seat ${w.seat} (${w.rank}): [${(w.best5||[]).join(' ')}]`).join(' | ');
       log(`Showdown: ${msg.board?.join(' ') || 'no board'} | ${hands}${winners ? ' | Winners: ' + winners : ''}`);
+      highlightShowdown(msg);
       break;
       
     case 'hand_end':
@@ -330,6 +384,7 @@ if (nextHandBtn) {
       } else {
         const data = await res.json();
         log(`Next hand: ${data.hand_id}`);
+        if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
       }
     } catch (e) {
       log(`Next hand error: ${e}`);
@@ -352,6 +407,7 @@ if (restartBtn) {
         log(`Session restarted: ${data.hand_id}`);
         if (nextHandBtn) nextHandBtn.style.display = 'none';
         restartBtn.style.display = 'none';
+        if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
       }
     } catch (e) {
       log(`Restart error: ${e}`);

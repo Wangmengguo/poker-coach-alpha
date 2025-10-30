@@ -64,6 +64,10 @@ class TableEngine:
             ("human" if i + 1 == self.cfg.human_seat else f"bot{i+1}")
             for i in range(self.cfg.seats)
         ]
+        # Track folds within a hand by current state index (set/reset each hand)
+        self.folded_flags: Optional[List[bool]] = None
+        # Persist hole cards for the current hand so we can reveal mucked losers at showdown
+        self.hand_hole_cards: Optional[Dict[int, List[str]]] = None
         # Display/state metadata
         self.button_seat: int = 1
 
@@ -155,6 +159,10 @@ class TableEngine:
         else:
             self.seat_map_active = []
         stacks = [int(self.seat_stacks[s]) for s in self.seat_map_active]
+        # Reset per-hand fold tracking
+        self.folded_flags = [False] * len(stacks)
+        # Reset per-hand hole card cache
+        self.hand_hole_cards = {}
 
         # Generate deterministic seed for this hand
         hand_seed = self._generate_hand_seed()
@@ -278,6 +286,13 @@ class TableEngine:
         if t in ("check", "call"):
             self.state.check_or_call()
         elif t == "fold":
+            # Mark folded seat for showdown filtering
+            try:
+                idx = self.state.turn_index
+                if idx is not None and self.folded_flags is not None and 0 <= idx < len(self.folded_flags):
+                    self.folded_flags[idx] = True
+            except Exception:
+                pass
             self.state.fold()
         elif t == "raise_to":
             amt = int(action.get("amount", 0))
@@ -327,6 +342,14 @@ class TableEngine:
         statuses = list(getattr(self.state, "statuses", []) or [])
         hole_cards = list(getattr(self.state, "hole_cards", []) or [])
         hole_statuses = list(getattr(self.state, "hole_card_statuses", []) or [])
+        # Update per-hand hole card cache (raw values) when known
+        try:
+            if self.hand_hole_cards is not None:
+                for i, hc in enumerate(hole_cards):
+                    if hc:
+                        self.hand_hole_cards[i] = [str(c) for c in hc]
+        except Exception:
+            pass
 
         for seat in range(1, self.cfg.seats + 1):
             state_idx = self._seat_to_state_index(seat)
@@ -554,20 +577,30 @@ class TableEngine:
                     statuses = list(
                         getattr(self.state, "statuses", [True] * len(self.seat_map_active)) or []
                     )
+                    # Include all players who did NOT fold (even if they lost at showdown)
+                    folded = list(self.folded_flags or [False] * len(self.seat_map_active))
                     sd_players = []
                     for i in range(len(self.seat_map_active)):
-                        in_hand = bool(statuses[i])
-                        if not in_hand:
+                        # Consider a player part of showdown if they were not marked folded
+                        in_showdown = not (folded[i])
+                        if not in_showdown:
                             continue  # hide folded
                         seat_num = self._state_index_to_seat(i)
+                        # Prefer live state's hole cards; fallback to cached dealt cards for mucked players
+                        live_holes = [
+                            str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
+                        ]
+                        if not live_holes:
+                            try:
+                                live_holes = list((self.hand_hole_cards or {}).get(i, []))
+                            except Exception:
+                                live_holes = []
                         sd_players.append(
                             {
                                 "seat": seat_num,
                                 "id": self.player_ids[seat_num - 1],
-                                "hole": [
-                                    str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
-                                ],
-                                "in_hand": in_hand,
+                                "hole": live_holes,
+                                "in_hand": bool(statuses[i]),
                             }
                         )
 
@@ -708,55 +741,188 @@ class TableEngine:
             except Exception:
                 return []
 
-        # Try pokerkit hand evaluation APIs
+        def _humanize_label(label_obj) -> str:
+            try:
+                s = str(label_obj)
+                # Common forms: 'Label.TWO_PAIR' or 'Two Pair'
+                if "." in s:
+                    s = s.split(".", 1)[1]
+                s = s.replace("_", " ").title()
+                # Prefer standard poker casing
+                replacements = {
+                    "Of A Kind": "of a Kind",
+                }
+                for k, v in replacements.items():
+                    s = s.replace(k, v)
+                return s
+            except Exception:
+                return "Best 5"
+
+        # Helpers for detailed human reason from best 5
+        def _abbr(card) -> str:
+            try:
+                s = str(card)
+                if "(" in s and ")" in s:
+                    return s[s.rfind("(") + 1 : s.rfind(")")]
+                return s
+            except Exception:
+                return str(card)
+
+        rank_order = {r: i for i, r in enumerate(list("--23456789TJQKA"))}
+        rank_name = {
+            14: "Ace",
+            13: "King",
+            12: "Queen",
+            11: "Jack",
+            10: "Ten",
+            9: "Nine",
+            8: "Eight",
+            7: "Seven",
+            6: "Six",
+            5: "Five",
+            4: "Four",
+            3: "Trey",
+            2: "Deuce",
+        }
+        def plural(n: int) -> str:
+            return (rank_name.get(n, str(n)) + "s") if n not in (3, 5) else ("Treys" if n == 3 else "Fives")
+
+        def describe_best5(combo_cards) -> str:
+            try:
+                ab = [_abbr(c) for c in combo_cards]
+                ranks = [rank_order.get(a[0], 0) for a in ab]
+                suits = [a[1] if len(a) > 1 else "?" for a in ab]
+                # Counts
+                from collections import Counter
+                rc = Counter(ranks)
+                counts = sorted(((cnt, r) for r, cnt in rc.items()), key=lambda x: (x[0], x[1]), reverse=True)
+                uniq = sorted(set(ranks))
+                # Straight detection (A-5)
+                is_straight = False
+                high_straight = 0
+                if len(uniq) == 5:
+                    if max(uniq) - min(uniq) == 4:
+                        is_straight = True
+                        high_straight = max(uniq)
+                    elif set(uniq) == {14, 5, 4, 3, 2}:
+                        is_straight = True
+                        high_straight = 5
+                is_flush = len(set(suits)) == 1
+
+                if is_straight and is_flush:
+                    if high_straight == 14 and 10 in uniq:
+                        return "Royal Flush"
+                    return f"Straight Flush to {rank_name.get(high_straight, str(high_straight))}"
+                if counts[0][0] == 4:
+                    return f"Four of a Kind, {plural(counts[0][1])}"
+                if counts[0][0] == 3 and counts[1][0] == 2:
+                    return f"Full House, {plural(counts[0][1])} over {plural(counts[1][1])}"
+                if is_flush:
+                    hi = max(ranks)
+                    return f"Flush, {rank_name.get(hi, str(hi))} high"
+                if is_straight:
+                    return f"Straight to {rank_name.get(high_straight, str(high_straight))}"
+                if counts[0][0] == 3:
+                    return f"Three of a Kind, {plural(counts[0][1])}"
+                if counts[0][0] == 2 and counts[1][0] == 2:
+                    hi_pair = max(counts[0][1], counts[1][1])
+                    lo_pair = min(counts[0][1], counts[1][1])
+                    # kicker
+                    kick = max([r for r in ranks if r not in (hi_pair, lo_pair)])
+                    return f"Two Pair, {plural(hi_pair)} and {plural(lo_pair)} ({rank_name.get(kick, str(kick))} kicker)"
+                if counts[0][0] == 2:
+                    pair = counts[0][1]
+                    # best kicker
+                    kickers = sorted([r for r in ranks if r != pair], reverse=True)
+                    kick = rank_name.get(kickers[0], str(kickers[0])) if kickers else ""
+                    return f"Pair of {plural(pair)}{(' (' + kick + ' kicker)') if kick else ''}"
+                hi = max(ranks)
+                return f"High Card, {rank_name.get(hi, str(hi))}"
+            except Exception:
+                return "Best 5"
+
+        # Prefer a local, deterministic best-of-7 evaluator to avoid library ordering ambiguity
         def best5_for_idx(idx: int) -> Tuple[str, List[str]]:
             seven = list(getattr(self.state, "hole_cards", [])[idx] or []) + list(board_cards)
-            # Attempt to use pokerkit's high-hand utilities; fallback to simple pick
-            try:
-                # Option A: StandardHighHand with best-of-7
-                try:
-                    from pokerkit.hands import StandardHighHand as SHH  # type: ignore
 
-                    best = None
-                    best_rank = None
-                    best_combo = None
-                    for combo in combinations(seven, 5):
-                        h = SHH(combo) if callable(SHH) else SHH.from_cards(combo)  # type: ignore
-                        rank_val = getattr(h, "rank", None) or getattr(h, "value", None)
-                        if best is None or (rank_val is not None and rank_val > best_rank):
-                            best = h
-                            best_rank = rank_val
-                            best_combo = combo
-                    label = (
-                        getattr(best, "label", None)
-                        or getattr(best, "__class__", type("", (), {})).__name__
-                    )
-                    return str(label) if label else "Best 5", to_strs(best_combo or seven[:5])
+            def score_combo(combo_cards):
+                try:
+                    ab = [_abbr(c) for c in combo_cards]
+                    ranks = [rank_order.get(a[0], 0) for a in ab]
+                    suits = [a[1] if len(a) > 1 else "?" for a in ab]
+                    from collections import Counter
+                    rc = Counter(ranks)
+                    counts = sorted(((cnt, r) for r, cnt in rc.items()), key=lambda x: (x[0], x[1]), reverse=True)
+                    uniq = sorted(set(ranks))
+                    # Straight detection (A-5 allowed)
+                    is_straight = False
+                    high_straight = 0
+                    if len(uniq) == 5:
+                        if max(uniq) - min(uniq) == 4:
+                            is_straight = True
+                            high_straight = max(uniq)
+                        elif set(uniq) == {14, 5, 4, 3, 2}:
+                            is_straight = True
+                            high_straight = 5
+                    is_flush = len(set(suits)) == 1
+
+                    # Category ordering (higher is better)
+                    # 8: Straight Flush, 7: Quads, 6: Full House, 5: Flush, 4: Straight, 3: Trips, 2: Two Pair, 1: Pair, 0: High Card
+                    if is_straight and is_flush:
+                        return (8, [high_straight])
+                    if counts[0][0] == 4:
+                        # (quad_rank, kicker)
+                        quad = counts[0][1]
+                        kicker = max([r for r in ranks if r != quad])
+                        return (7, [quad, kicker])
+                    if counts[0][0] == 3 and counts[1][0] == 2:
+                        # (trips_rank, pair_rank)
+                        return (6, [counts[0][1], counts[1][1]])
+                    if is_flush:
+                        # 5 kickers sorted
+                        return (5, sorted(ranks, reverse=True))
+                    if is_straight:
+                        return (4, [high_straight])
+                    if counts[0][0] == 3:
+                        trips = counts[0][1]
+                        kickers = sorted([r for r in ranks if r != trips], reverse=True)
+                        return (3, [trips] + kickers)
+                    if counts[0][0] == 2 and counts[1][0] == 2:
+                        hi_pair = max(counts[0][1], counts[1][1])
+                        lo_pair = min(counts[0][1], counts[1][1])
+                        kicker = max([r for r in ranks if r not in (hi_pair, lo_pair)])
+                        return (2, [hi_pair, lo_pair, kicker])
+                    if counts[0][0] == 2:
+                        pr = counts[0][1]
+                        kickers = sorted([r for r in ranks if r != pr], reverse=True)
+                        return (1, [pr] + kickers[:3])
+                    return (0, sorted(ranks, reverse=True))
                 except Exception:
-                    pass
-                # Option B: StandardLookup
+                    return (-1, [])
+
+            best_combo = None
+            best_key = None
+            for combo in combinations(seven, 5):
+                key = score_combo(combo)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_combo = combo
+
+            # As a fallback, try pokerkit lookups if we somehow failed
+            if best_combo is None:
                 try:
                     from pokerkit.lookups import StandardLookup  # type: ignore
-
-                    best_combo = None
                     best_entry = None
                     for combo in combinations(seven, 5):
                         entry = StandardLookup.lookup(combo)  # type: ignore
                         if best_entry is None or entry > best_entry:
                             best_entry = entry
                             best_combo = combo
-                    rank_name = (
-                        getattr(best_entry, "label", None)
-                        or getattr(best_entry, "name", None)
-                        or "Best 5"
-                    )
-                    return str(rank_name), to_strs(best_combo or seven[:5])
                 except Exception:
-                    pass
-            except Exception:
-                pass
-            # Fallback: just pick any 5
-            return "Best 5", to_strs(seven[:5])
+                    best_combo = seven[:5]
+
+            detail = describe_best5(best_combo or seven[:5])
+            return detail, to_strs(best_combo or seven[:5])
 
         for idx in winner_indices:
             try:
