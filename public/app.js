@@ -117,9 +117,77 @@ function renderState(table) {
 
 function renderActions(legal) {
   actionsEl.innerHTML = '';
+
+  // Detect a range-based raise option (min/max)
+  let rangeAction = null;
   for (const a of legal) {
+    if (a.type === 'raise_to' && (typeof a.min === 'number' || typeof a.max === 'number')) {
+      rangeAction = a;
+      break;
+    }
+  }
+
+  // If present, render custom raise input constrained by backend-provided min/max
+  if (rangeAction) {
+    const wrap = document.createElement('div');
+    wrap.className = 'custom-raise';
+
+    const label = document.createElement('label');
+    label.textContent = 'Custom raise:';
+    label.style.marginRight = '8px';
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    if (typeof rangeAction.min === 'number') input.min = String(rangeAction.min);
+    if (typeof rangeAction.max === 'number') input.max = String(rangeAction.max);
+    input.step = '1';
+    input.placeholder = `${rangeAction.min ?? ''}${(rangeAction.min!=null||rangeAction.max!=null)?'-':''}${rangeAction.max ?? ''}`;
+    input.id = 'customRaiseInput';
+    input.style.width = '120px';
+    input.style.marginRight = '8px';
+
+    const raiseBtn = document.createElement('button');
+    raiseBtn.textContent = 'Raise';
+    raiseBtn.className = 'raise-btn';
+    raiseBtn.disabled = true;
+
+    const validate = () => {
+      const v = parseInt(input.value, 10);
+      const hasV = !Number.isNaN(v);
+      const geMin = (rangeAction.min == null) || (hasV && v >= rangeAction.min);
+      const leMax = (rangeAction.max == null) || (hasV && v <= rangeAction.max);
+      raiseBtn.disabled = !(hasV && geMin && leMax);
+    };
+
+    input.addEventListener('input', validate);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !raiseBtn.disabled) {
+        raiseBtn.click();
+      }
+    });
+
+    raiseBtn.onclick = () => {
+      const v = parseInt(input.value, 10);
+      if (!Number.isNaN(v)) {
+        sendAction({ type: 'raise_to', amount: v });
+      }
+    };
+
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    wrap.appendChild(raiseBtn);
+    actionsEl.appendChild(wrap);
+  }
+
+  // Render discrete action buttons (check/call/fold and fixed raise_to amounts)
+  for (const a of legal) {
+    // Skip the range representation for raise_to; we'll render only discrete raise buttons here
+    if (a.type === 'raise_to' && (typeof a.amount !== 'number') && (typeof a.min === 'number' || typeof a.max === 'number')) {
+      continue;
+    }
+
     const btn = document.createElement('button');
-    
+
     // Set button text and classes
     if (a.type === 'call') {
       btn.textContent = `Call $${a.amount}`;
@@ -130,13 +198,13 @@ function renderActions(legal) {
     } else if (a.type === 'fold') {
       btn.textContent = 'Fold';
       btn.className = 'fold-btn';
-    } else if (a.type === 'raise_to') {
+    } else if (a.type === 'raise_to' && typeof a.amount === 'number') {
       btn.textContent = `Raise to $${a.amount}`;
       btn.className = 'raise-btn';
     } else {
       btn.textContent = a.type;
     }
-    
+
     btn.onclick = () => sendAction(a);
     actionsEl.appendChild(btn);
   }

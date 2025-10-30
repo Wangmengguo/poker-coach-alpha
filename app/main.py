@@ -187,9 +187,24 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     # Validate against legal actions
                     legal_actions = engine.legal_actions()
                     if not validate_action_against_legal(client_action.action, legal_actions):
-                        error_msg = Error(message="illegal action")
-                        await websocket.send_json(error_msg.model_dump())
-                        continue
+                        # Fallback: if it's a raise_to with amount and the engine accepts it, allow it
+                        try:
+                            if action.get("type") == "raise_to" and "amount" in action:
+                                amt = int(action.get("amount"))
+                                if engine._try_raise_to(amt):  # type: ignore[attr-defined]
+                                    pass  # accept
+                                else:
+                                    error_msg = Error(message="illegal action")
+                                    await websocket.send_json(error_msg.model_dump())
+                                    continue
+                            else:
+                                error_msg = Error(message="illegal action")
+                                await websocket.send_json(error_msg.model_dump())
+                                continue
+                        except Exception:
+                            error_msg = Error(message="illegal action")
+                            await websocket.send_json(error_msg.model_dump())
+                            continue
 
                     # Mark action as processed for idempotency
                     engine.bot_manager.add_processed_action(client_action.action_id)

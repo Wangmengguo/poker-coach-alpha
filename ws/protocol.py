@@ -162,7 +162,13 @@ def validate_action_against_legal(
             l_amt = _get_attr(legal, "amount")
             if l_amt is not None and a_amt == l_amt:
                 return True
-    return False
+            # Support range-based validation when min/max are provided
+            l_min = _get_attr(legal, "min")
+            l_max = _get_attr(legal, "max")
+            if a_amt is not None and (l_min is not None or l_max is not None):
+                if (l_min is None or a_amt >= l_min) and (l_max is None or a_amt <= l_max):
+                    return True
+        return False
 
 
 def is_action_idempotent(action_id: str, processed_actions: set) -> bool:

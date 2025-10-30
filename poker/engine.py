@@ -237,13 +237,39 @@ class TableEngine:
         except Exception:
             pass
 
-        seen = set()
         for amt in sorted(set(candidates)):
             if amt <= max_bet:
                 continue
             if self._try_raise_to(amt):
                 actions.append({"type": "raise_to", "amount": int(amt)})
-                seen.add(amt)
+
+        # Provide a custom raise range using min/max bounds validated by simulation
+        try:
+            # Lower bound: smallest legal raise-to strictly greater than current max bet
+            low = max_bet + 1
+            # Upper bound: player's maximum bet-to (bet so far + stack)
+            high = self._max_bet_to(i)
+            min_to: Optional[int] = None
+            max_to: Optional[int] = None
+            if high is not None and high > low:
+                # Find minimum legal raise-to
+                # Iterate upward with a safe cap
+                cap = min(high, low + 5000)  # safety cap
+                for a in range(low, cap + 1):
+                    if self._try_raise_to(a):
+                        min_to = a
+                        break
+                # Find maximum legal raise-to (prefer high -> down)
+                for a in range(high, (min_to or low) - 1, -1):
+                    if self._try_raise_to(a):
+                        max_to = a
+                        break
+            if min_to is not None and max_to is not None and min_to <= max_to:
+                actions.append({"type": "raise_to", "min": int(min_to), "max": int(max_to)})
+        except Exception:
+            # If we fail to compute range, silently skip
+            pass
+
         return actions
 
     def apply_action(self, action: Dict) -> None:
