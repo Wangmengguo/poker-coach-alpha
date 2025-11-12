@@ -64,6 +64,8 @@ class Prompt(BaseModel):
     to_act: int
     deadline: Optional[str] = None
     legal_actions: List[LegalAction]
+    # Optional minimal analysis for MVP; payload may be partial
+    analysis: Optional[Dict[str, Any]] = None
 
 
 class HandResult(BaseModel):
@@ -121,9 +123,28 @@ class Ack(BaseModel):
     received: Dict[str, Any]
 
 
+# ========== Analysis Update ==========
+
+
+class HandStrengthPayload(BaseModel):
+    hand_strength_pct: Optional[float] = None
+    model: str = "pokerkit.calculate_hand_strength"
+    sample_count: int
+    players: int
+    degraded: Optional[bool] = False
+    reason: Optional[str] = None
+
+
+class AnalysisUpdate(BaseModel):
+    type: Literal["analysis"] = "analysis"
+    seq: int
+    to_act: int
+    hand_strength: Optional[HandStrengthPayload] = None
+
+
 # ========== Message Union Type ==========
 
-ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack]
+ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack, AnalysisUpdate]
 ClientMessage = Union[ClientAction, Resume]
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Set
+import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from poker.engine import EngineConfig, TableEngine
 from ws.protocol import ClientAction, Error, validate_action_against_legal
+from poker.analysis.equity import compute_hand_strength, HandStrengthResult
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -60,6 +62,83 @@ _engines: Dict[str, TableEngine] = {
 }
 
 
+async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
+    """Compute hand strength asynchronously and broadcast an analysis update.
+
+    Time-budgeted to ~100ms; if it times out or fails, send a degraded/null payload.
+    """
+    engine = _engines.get(table_id)
+    if not engine or engine.state is None:
+        return
+    # Map seat -> current state index
+    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+    if idx is None:
+        return
+    # Compute with timeout and offload to a thread
+    try:
+        import anyio
+
+        # Precompute live players for better fallback info
+        try:
+            statuses = list(getattr(engine.state, "statuses", []) or [])
+            players = sum(1 for x in statuses if bool(x)) or 0
+            if not players:
+                stacks = list(getattr(engine.state, "stacks", []) or [])
+                players = sum(1 for s in stacks if (s or 0) > 0)
+        except Exception:
+            players = 0
+
+        with anyio.move_on_after(0.1) as scope:  # 100ms budget
+            result: HandStrengthResult = await anyio.to_thread.run_sync(
+                compute_hand_strength, engine.state, idx, 100
+            )
+        degraded = False
+        if scope.cancel_called:  # timed out
+            result = HandStrengthResult(
+                hand_strength_pct=None,
+                model="pokerkit.calculate_hand_strength",
+                sample_count=100,
+                players=players,
+                degraded=True,
+                reason="timeout",
+            )
+            degraded = True
+        msg = {
+            "type": "analysis",
+            "seq": engine.next_sequence(),
+            "to_act": seat,
+            "hand_strength": {
+                "hand_strength_pct": result.hand_strength_pct,
+                "model": result.model,
+                "sample_count": result.sample_count,
+                "players": result.players,
+                "degraded": result.degraded or degraded,
+                "reason": result.reason,
+            },
+        }
+        await manager.broadcast(table_id, msg)
+    except Exception:
+        try:
+            await manager.broadcast(
+                table_id,
+                {
+                    "type": "analysis",
+                    "seq": engine.next_sequence(),
+                    "to_act": seat,
+                    "hand_strength": {
+                        "hand_strength_pct": None,
+                        "model": "pokerkit.calculate_hand_strength",
+                        "sample_count": 100,
+                        "players": players,
+                        "degraded": True,
+                        "reason": "error",
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     index_path = PUBLIC_DIR / "index.html"
@@ -99,6 +178,9 @@ def start_session(table_id: str):
             import anyio
 
             anyio.from_thread.run(manager.broadcast, table_id, m)
+            # After broadcasting a prompt, compute hand strength asynchronously
+            if isinstance(m, dict) and m.get("type") == "prompt":
+                anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -122,6 +204,8 @@ def next_hand(table_id: str):
             import anyio
 
             anyio.from_thread.run(manager.broadcast, table_id, m)
+            if isinstance(m, dict) and m.get("type") == "prompt":
+                anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -164,6 +248,15 @@ async def ws_table(websocket: WebSocket, table_id: str):
             await websocket.send_json(
                 {"type": "snapshot", "seq": 0, "table": engine.build_table_snapshot()}
             )
+            # If it's currently the human's turn, proactively compute hand strength
+            try:
+                idx = engine.state.turn_index  # state index
+                if idx is not None:
+                    seat_act = engine._state_index_to_seat(idx)
+                    if seat_act == 1:
+                        asyncio.create_task(_broadcast_hand_strength(table_id, seat_act))
+            except Exception:
+                pass
         # Main loop: receive client actions and advance engine
         while True:
             data = await websocket.receive_json()
@@ -243,6 +336,9 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     continue
                 for m in msgs:
                     await manager.broadcast(table_id, m)
+                    if isinstance(m, dict) and m.get("type") == "prompt":
+                        # Schedule async hand-strength compute without blocking UI
+                        asyncio.create_task(_broadcast_hand_strength(table_id, m.get("to_act", 1)))
             else:
                 await websocket.send_json({"type": "ack", "received": data})
     except WebSocketDisconnect:

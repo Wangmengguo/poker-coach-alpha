@@ -11,6 +11,7 @@ const nextHandBtn = document.getElementById('nextHandBtn');
 const restartBtn = document.getElementById('restartBtn');
 const showdownSummaryEl = document.getElementById('showdownSummary');
 const analysisEl = document.getElementById('analysis');
+let lastPotMath = null;
 
 // State
 let ws;
@@ -326,6 +327,7 @@ function handleMessage(msg) {
       lastSnapshot = msg;
       renderState(msg.table);
       if (analysisEl) analysisEl.textContent = '';
+      lastPotMath = null;
       break;
       
     case 'prompt':
@@ -335,7 +337,15 @@ function handleMessage(msg) {
       try {
         const potMath = msg.analysis?.pot_math || null;
         if (analysisEl) {
-          analysisEl.textContent = potMath ? JSON.stringify(potMath, null, 2) : '';
+          lastPotMath = potMath;
+          if (potMath) {
+            analysisEl.textContent = JSON.stringify({
+              pot_math: potMath,
+              hand_strength: 'computing…'
+            }, null, 2);
+          } else {
+            analysisEl.textContent = 'computing…';
+          }
         }
       } catch (e) {
         if (analysisEl) analysisEl.textContent = '';
@@ -374,6 +384,25 @@ function handleMessage(msg) {
         console.error('Server error trace:', msg.trace);
       }
       break;
+
+    case 'analysis': {
+      // Merge last pot_math with hand_strength update
+      try {
+        const hs = msg.hand_strength || null;
+        if (analysisEl) {
+          const obj = {};
+          if (lastPotMath) obj.pot_math = lastPotMath;
+          obj.hand_strength = hs || { hand_strength_pct: null, reason: '—' };
+          obj.hand_strength_display = (hs && hs.hand_strength_pct != null)
+            ? (Number(hs.hand_strength_pct).toFixed(1) + '%')
+            : '—';
+          analysisEl.textContent = JSON.stringify(obj, null, 2);
+        }
+      } catch (e) {
+        // ignore
+      }
+      break;
+    }
       
     default:
       log(`Unknown message: ${msg.type}`);

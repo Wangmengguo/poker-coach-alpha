@@ -123,7 +123,7 @@ Rationale:
 
 - MVP favors correctness over performance; compute on demand at hero prompts.
 - No dedicated cache in MVP; if slower, the UI briefly shows "computing…".
-- Monte Carlo sampling: `sample_count` is configurable; default 2000 (tune for end-to-end latency). If degraded, annotate `hand_strength.degraded=true`.
+- Monte Carlo sampling: `sample_count` is configurable; default 100 in MVP v0.2 to ensure fast, non‑blocking updates (tuneable). If degraded, annotate `hand_strength.degraded=true`.
 
 ### 4.4 Definitions and Boundaries (MVP-precise)
 
@@ -194,7 +194,7 @@ Ranges configuration and endpoints are out of MVP scope and will be revisited po
     "stack_spr": {"effective_stack": 180, "spr": 5.0, "vs": "MaxCoverOpponent"},
     "board_texture": {"paired": false, "monotone": false, "two_tone": true, "straighty": false},
     "hand": {"label": "Top Pair, Top Kicker"},
-    "hand_strength": {"hand_strength_pct": 41.2, "model": "pokerkit.calculate_hand_strength", "sample_count": 2000, "players": 6},
+    "hand_strength": {"hand_strength_pct": 41.2, "model": "pokerkit.calculate_hand_strength", "sample_count": 100, "players": 6},
     "stats_human": {"vpip": 28, "pfr": 14, "afq": 48, "style": "Loose-Aggressive", "hands": 25}
   }
 }
