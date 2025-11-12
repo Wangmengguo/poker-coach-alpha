@@ -226,13 +226,15 @@ Note: We will formalize Pydantic models after stabilization; for now, the client
 
 ---
 
-## 9. Delivery Checklist
+## 9. Delivery Checklist (Status: Incomplete - Implementation Not Yet Started)
 
-- [ ] `poker/analysis/` scaffolding (`core/equity/stats/models.py`).
-- [ ] Prompt‑time analysis injection in `engine` with optional `analysis` field on `Prompt`.
-- [ ] Drawer UI (HTML/CSS/JS) and prompt handler for analysis.
-- [ ] Unit tests for core/hand-strength envelopes and human stats/style mapping.
-- [ ] Manual QA: run a session, verify drawer behavior and live updates.
+- [ ] `poker/analysis/` scaffolding (`core/equity/stats/models.py`) — **TODO**
+- [ ] Prompt‑time analysis injection in `engine` with optional `analysis` field on `Prompt` — **TODO**
+- [ ] Drawer UI (HTML/CSS/JS) and prompt handler for analysis — **TODO**
+- [ ] Unit tests for core/hand-strength envelopes and human stats/style mapping — **TODO**
+- [ ] Manual QA: run a session, verify drawer behavior and live updates — **TODO**
+
+**Note:** The current codebase only contains the base poker engine and bot management system. Coach analysis features have not been implemented yet and should be developed following the incremental steps in Section 5 of this document.
 
 ---
 

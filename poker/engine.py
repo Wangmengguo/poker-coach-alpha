@@ -11,6 +11,7 @@ from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
 
 from .bot_manager import BotManager
+from .analysis.core import compute_pot_math
 
 
 def _card_to_str(card) -> str:
@@ -675,11 +676,18 @@ class TableEngine:
                 # Build prompt
                 la = self.legal_actions()
                 seq = self.next_sequence()
+                # Minimal MVP v0.1 analysis: pot_math only
+                try:
+                    pot_math = compute_pot_math(self.state, idx)
+                except Exception:
+                    pot_math = None
+
                 prompt = {
                     "type": "prompt",
                     "seq": seq,
                     "to_act": seat,
                     "legal_actions": la,
+                    "analysis": {"pot_math": pot_math} if pot_math is not None else {},
                 }
                 messages.append(prompt)
                 break

@@ -10,6 +10,7 @@ const reconnectBtn = document.getElementById('reconnectBtn');
 const nextHandBtn = document.getElementById('nextHandBtn');
 const restartBtn = document.getElementById('restartBtn');
 const showdownSummaryEl = document.getElementById('showdownSummary');
+const analysisEl = document.getElementById('analysis');
 
 // State
 let ws;
@@ -324,11 +325,21 @@ function handleMessage(msg) {
     case 'snapshot':
       lastSnapshot = msg;
       renderState(msg.table);
+      if (analysisEl) analysisEl.textContent = '';
       break;
       
     case 'prompt':
       renderActions(msg.legal_actions || []);
       log(`Your turn - ${msg.legal_actions?.length || 0} options`);
+      // MVP v0.1: dump raw pot_math JSON if present
+      try {
+        const potMath = msg.analysis?.pot_math || null;
+        if (analysisEl) {
+          analysisEl.textContent = potMath ? JSON.stringify(potMath, null, 2) : '';
+        }
+      } catch (e) {
+        if (analysisEl) analysisEl.textContent = '';
+      }
       break;
       
     case 'showdown':
