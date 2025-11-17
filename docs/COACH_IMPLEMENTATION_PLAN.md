@@ -1,14 +1,20 @@
 # Poker Coach Implementation Plan
 
-**Status:** In Progress  
-**Version:** 1.4 (Hand Strength function finalized)  
-**Last Updated:** 2025-11-11
+**Status:** In Progress (MVP coaching features partially implemented)  
+**Version:** 1.5 (Hand Strength + pot math + basic stats wired)  
+**Last Updated:** 2025-11-17
 
 ---
 
 ## 1. Overview
 
 This document specifies the current plan for delivering real-time coaching features. Design is strictly based on PokerKit for calculations, a drawer-style UI, and incremental integration that prioritizes user-visible value.
+
+Current implementation snapshot (MVP v0.3):
+- Engine: base table engine and bot management in place; REST + WebSocket flow stable.
+- Analysis (backend): minimal pot math (`to_call`, `pot`, `spr`) and hero hand strength via PokerKit are implemented; human-only VPIP/PFR/AFq stats are tracked session-wide.
+- Analysis (wire protocol): `Prompt.analysis` currently carries `pot_math` and `stats` (human-only); hero hand strength is streamed separately via `type="analysis"` messages.
+- UI: a simple analysis panel renders JSON for debugging; the drawer-style UI described below is planned but not yet implemented.
 
 MVP scope (agreed decisions):
 - Metrics: adopt clarified formulas and edge cases below; unambiguous definitions for pot odds, effective stack, and SPR. Required Equity will not be displayed in MVP.
@@ -105,6 +111,8 @@ tests/
 
 ### 4.2 Data flow (prompt-first integration)
 
+Target (steady state) data flow:
+
 ```
 engine builds human prompt
      ↓
@@ -114,6 +122,11 @@ WebSocket prompt message { type: 'prompt', analysis: {...} }
      ↓
 Client opens/updates the drawer and renders analysis
 ```
+
+Current implementation (MVP v0.3):
+- `Prompt.analysis` includes `pot_math` (core math) and `stats` (human-only VPIP/PFR/AFq).
+- Hero hand strength is computed asynchronously and delivered via separate `AnalysisUpdate` WS messages (`type: "analysis"`) carrying a `hand_strength` payload.
+- The client merges the latest `pot_math` and `hand_strength` into a single view for the user.
 
 Rationale:
 - Compute only when it matters (hero to act, or when board changes before hero acts).
@@ -181,7 +194,52 @@ Rationale:
 
 Ranges configuration and endpoints are out of MVP scope and will be revisited post‑MVP.
 
-### 6.2 WebSocket prompt extension (example)
+### 6.2 WebSocket prompt extension (examples)
+
+Current implementation (MVP v0.3) — prompt:
+
+```json
+{
+  "type": "prompt",
+  "seq": 123,
+  "to_act": 1,
+  "legal_actions": [ ... ],
+  "analysis": {
+    "pot_math": {"to_call": 12, "pot": 36, "spr": 4.5},
+    "stats": {
+      "vpip_pct": 28.3,
+      "vpip_voluntary": 17,
+      "vpip_opportunities": 60,
+      "pfr_pct": 14.2,
+      "pfr_raises": 8,
+      "pfr_opportunities": 60,
+      "afq_pct": 47.8,
+      "afq_agg": 32,
+      "afq_total": 67
+    }
+  }
+}
+```
+
+Current implementation (MVP v0.3) — async hand strength update:
+
+```json
+{
+  "type": "analysis",
+  "seq": 130,
+  "to_act": 1,
+  "hand_strength": {
+    "hand_strength_pct": 41.2,
+    "model": "pokerkit.calculate_hand_strength",
+    "sample_count": 100,
+    "players": 6,
+    "degraded": false,
+    "reason": null
+  }
+}
+```
+
+Target (steady state) prompt payload (drawer UI; future iteration):
 
 ```json
 {
@@ -200,7 +258,7 @@ Ranges configuration and endpoints are out of MVP scope and will be revisited po
 }
 ```
 
-Note: We will formalize Pydantic models after stabilization; for now, the client reads these fields opportunistically. The Prompt schema adds an optional `analysis` field for MVP.
+Note: Pydantic models in `ws.protocol` already include `Prompt.analysis` and `AnalysisUpdate`. The client reads these fields opportunistically; field presence is not guaranteed across versions.
 
 ---
 
@@ -226,15 +284,16 @@ Note: We will formalize Pydantic models after stabilization; for now, the client
 
 ---
 
-## 9. Delivery Checklist (Status: Incomplete - Implementation Not Yet Started)
+## 9. Delivery Checklist (Status: Partially Implemented, Iterating)
 
-- [ ] `poker/analysis/` scaffolding (`core/equity/stats/models.py`) — **TODO**
-- [ ] Prompt‑time analysis injection in `engine` with optional `analysis` field on `Prompt` — **TODO**
-- [ ] Drawer UI (HTML/CSS/JS) and prompt handler for analysis — **TODO**
-- [ ] Unit tests for core/hand-strength envelopes and human stats/style mapping — **TODO**
-- [ ] Manual QA: run a session, verify drawer behavior and live updates — **TODO**
+- [x] `poker/analysis/` scaffolding (`core.py` for pot math, `equity.py` for hand strength; `stats`/`models` planned)  
+- [x] Prompt‑time analysis injection in `engine` with optional `analysis` field on `Prompt` (currently `pot_math` + human `stats`)  
+- [ ] Extract human stats tracking into `poker/analysis/stats.py` and expose a stable `stats_human` payload  
+- [ ] Drawer UI (HTML/CSS/JS) and prompt handler for structured analysis display  
+- [ ] Unit tests for core math/hand-strength envelopes and human stats/style mapping  
+- [ ] Manual QA: run a session, verify drawer behavior and live updates
 
-**Note:** The current codebase only contains the base poker engine and bot management system. Coach analysis features have not been implemented yet and should be developed following the incremental steps in Section 5 of this document.
+**Note:** The current codebase already includes a basic coaching pipeline (pot math, hand strength, and human stats) wired end‑to‑end. Remaining work focuses on refactoring (stats extraction), richer analysis (texture/hand/outs), better UX (drawer), and stronger tests, following the incremental steps in Section 5.
 
 ---
 
