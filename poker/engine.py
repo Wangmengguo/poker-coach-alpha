@@ -71,6 +71,20 @@ class TableEngine:
         self.hand_hole_cards: Optional[Dict[int, List[str]]] = None
         # Display/state metadata
         self.button_seat: int = 1
+        # Session-scoped human-only stats (MVP v0.3)
+        self.session_stats = {
+            "vpip_opportunities": 0,
+            "vpip_voluntary": 0,
+            "pfr_raises": 0,              # hands with a preflop raise by hero
+            # AFq components (postflop only):
+            "afq_agg": 0,                 # bets + raises count
+            "afq_total": 0,               # bets + raises + calls + checks (no folds)
+        }
+        # Per-hand flags for VPIP tracking
+        self._vpip_opp_counted: bool = False
+        self._vpip_counted: bool = False
+        # Per-hand flags for PFR (count at most once per hand)
+        self._pfr_counted: bool = False
 
     def start_session(self) -> None:
         # Reset session state
@@ -79,6 +93,17 @@ class TableEngine:
         self.sequence_number = 0
         self.button_seat = 1
         self.seat_stacks = [self.cfg.starting_stack] * self.cfg.seats
+        # Reset stats at session start
+        self.session_stats = {
+            "vpip_opportunities": 0,
+            "vpip_voluntary": 0,
+            "pfr_raises": 0,
+            "afq_agg": 0,
+            "afq_total": 0,
+        }
+        self._vpip_opp_counted = False
+        self._vpip_counted = False
+        self._pfr_counted = False
         # Start the first hand
         self._start_new_hand()
 
@@ -187,6 +212,11 @@ class TableEngine:
         # Record seat stacks snapshot at hand start
         self.hand_start_seat_stacks = list(self.seat_stacks)
         self.hand_index += 1
+        # Reset per-hand VPIP flags
+        self._vpip_opp_counted = False
+        self._vpip_counted = False
+        # Reset per-hand PFR flag
+        self._pfr_counted = False
 
     # ---------- Derived views ----------
     def _amount_to_call(self, idx: int) -> int:
@@ -284,6 +314,15 @@ class TableEngine:
     def apply_action(self, action: Dict) -> None:
         assert self.state is not None
         t = action.get("type")
+        # VPIP pre-check: capture actor seat and street before advancing state
+        actor_idx = self.state.turn_index
+        actor_seat = self._state_index_to_seat(actor_idx) if actor_idx is not None else None
+        is_preflop = (self._street_name() == "preflop")
+        # For AFq/PFR we also need to_call prior to action
+        try:
+            to_call_before = self._amount_to_call(actor_idx) if actor_idx is not None else 0
+        except Exception:
+            to_call_before = 0
         if t in ("check", "call"):
             self.state.check_or_call()
         elif t == "fold":
@@ -300,6 +339,45 @@ class TableEngine:
             self.state.complete_bet_or_raise_to(amt)
         else:
             raise ValueError(f"Unknown action type: {t}")
+
+        # VPIP tracking (human-only, preflop, voluntary money): call or raise_to counts once per hand
+        try:
+            if (
+                not self._vpip_counted
+                and is_preflop
+                and actor_seat == self.cfg.human_seat
+                and t in ("call", "raise_to")
+            ):
+                self.session_stats["vpip_voluntary"] += 1
+                self._vpip_counted = True
+        except Exception:
+            pass
+
+        # PFR tracking (human-only, preflop): any raise action (incl. 3bet+) counts once per hand
+        try:
+            if (
+                not self._pfr_counted
+                and is_preflop
+                and actor_seat == self.cfg.human_seat
+                and t == "raise_to"
+            ):
+                self.session_stats["pfr_raises"] += 1
+                self._pfr_counted = True
+        except Exception:
+            pass
+
+        # AFq tracking (postflop only): (bets + raises) / (bets + raises + calls + checks)
+        try:
+            if actor_seat == self.cfg.human_seat and not is_preflop:
+                if t == "raise_to":
+                    # to_call_before == 0 => bet; >0 => raise; both count as aggression
+                    self.session_stats["afq_agg"] += 1
+                    self.session_stats["afq_total"] += 1
+                elif t in ("check", "call"):
+                    self.session_stats["afq_total"] += 1
+                # fold is excluded from denominator by convention
+        except Exception:
+            pass
 
     def is_hand_over(self) -> bool:
         assert self.state is not None
@@ -682,12 +760,47 @@ class TableEngine:
                 except Exception:
                     pot_math = None
 
+                # MVP v0.3: include human VPIP/PFR/AFq stats and count preflop opportunity
+                stats_payload = None
+                try:
+                    # If this is the first preflop prompt for human, count an opportunity
+                    if self._street_name() == "preflop" and not self._vpip_opp_counted:
+                        self.session_stats["vpip_opportunities"] += 1
+                        self._vpip_opp_counted = True
+                    vpip_num = int(self.session_stats.get("vpip_voluntary", 0))
+                    vpip_den = int(self.session_stats.get("vpip_opportunities", 0))
+                    vpip_pct = float(vpip_num * 100.0 / vpip_den) if vpip_den > 0 else 0.0
+                    # PFR uses the same opportunity denominator as VPIP
+                    pfr_num = int(self.session_stats.get("pfr_raises", 0))
+                    pfr_den = vpip_den
+                    pfr_pct = float(pfr_num * 100.0 / pfr_den) if pfr_den > 0 else 0.0
+                    # AFq across postflop streets
+                    afq_agg = int(self.session_stats.get("afq_agg", 0))
+                    afq_total = int(self.session_stats.get("afq_total", 0))
+                    afq_pct = float(afq_agg * 100.0 / afq_total) if afq_total > 0 else 0.0
+                    stats_payload = {
+                        "vpip_pct": round(vpip_pct, 1),
+                        "vpip_voluntary": vpip_num,
+                        "vpip_opportunities": vpip_den,
+                        "pfr_pct": round(pfr_pct, 1),
+                        "pfr_raises": pfr_num,
+                        "pfr_opportunities": pfr_den,
+                        "afq_pct": round(afq_pct, 1),
+                        "afq_agg": afq_agg,
+                        "afq_total": afq_total,
+                    }
+                except Exception:
+                    stats_payload = None
+
                 prompt = {
                     "type": "prompt",
                     "seq": seq,
                     "to_act": seat,
                     "legal_actions": la,
-                    "analysis": {"pot_math": pot_math} if pot_math is not None else {},
+                    "analysis": {
+                        **({"pot_math": pot_math} if pot_math is not None else {}),
+                        **({"stats": stats_payload} if stats_payload is not None else {}),
+                    },
                 }
                 messages.append(prompt)
                 break

@@ -12,6 +12,7 @@ const restartBtn = document.getElementById('restartBtn');
 const showdownSummaryEl = document.getElementById('showdownSummary');
 const analysisEl = document.getElementById('analysis');
 let lastPotMath = null;
+let lastStats = null;
 
 // State
 let ws;
@@ -336,13 +337,25 @@ function handleMessage(msg) {
       // MVP v0.1: dump raw pot_math JSON if present
       try {
         const potMath = msg.analysis?.pot_math || null;
+        const stats = msg.analysis?.stats || null;
         if (analysisEl) {
           lastPotMath = potMath;
+          lastStats = stats;
           if (potMath) {
-            analysisEl.textContent = JSON.stringify({
-              pot_math: potMath,
-              hand_strength: 'computing…'
-            }, null, 2);
+            const obj = { pot_math: potMath, hand_strength: 'computing…' };
+            if (stats) {
+              obj.stats = stats;
+              const n = Number(stats.vpip_voluntary||0);
+              const d = Number(stats.vpip_opportunities||0);
+              obj.vpip_display = `VPIP: ${d>0?Math.round((n*100)/d):0}% (${n}/${d} hands)`;
+              const r = Number(stats.pfr_raises||0);
+              const rd = Number(stats.pfr_opportunities||d||0);
+              obj.pfr_display = `PFR: ${rd>0?Math.round((r*100)/rd):0}% (${r}/${rd} hands)`;
+              const agg = Number(stats.afq_agg||0);
+              const tot = Number(stats.afq_total||0);
+              obj.afq_display = `AFq: ${tot>0?Math.round((agg*100)/tot):0}% (${agg}/${tot} actions)`;
+            }
+            analysisEl.textContent = JSON.stringify(obj, null, 2);
           } else {
             analysisEl.textContent = 'computing…';
           }
@@ -396,6 +409,18 @@ function handleMessage(msg) {
           obj.hand_strength_display = (hs && hs.hand_strength_pct != null)
             ? (Number(hs.hand_strength_pct).toFixed(1) + '%')
             : '—';
+          if (lastStats) {
+            obj.stats = lastStats;
+            const n = Number(lastStats.vpip_voluntary||0);
+            const d = Number(lastStats.vpip_opportunities||0);
+            obj.vpip_display = `VPIP: ${d>0?Math.round((n*100)/d):0}% (${n}/${d} hands)`;
+            const r = Number(lastStats.pfr_raises||0);
+            const rd = Number(lastStats.pfr_opportunities||d||0);
+            obj.pfr_display = `PFR: ${rd>0?Math.round((r*100)/rd):0}% (${r}/${rd} hands)`;
+            const agg = Number(lastStats.afq_agg||0);
+            const tot = Number(lastStats.afq_total||0);
+            obj.afq_display = `AFq: ${tot>0?Math.round((agg*100)/tot):0}% (${agg}/${tot} actions)`;
+          }
           analysisEl.textContent = JSON.stringify(obj, null, 2);
         }
       } catch (e) {
