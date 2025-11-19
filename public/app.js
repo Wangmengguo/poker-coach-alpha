@@ -10,9 +10,23 @@ const reconnectBtn = document.getElementById('reconnectBtn');
 const nextHandBtn = document.getElementById('nextHandBtn');
 const restartBtn = document.getElementById('restartBtn');
 const showdownSummaryEl = document.getElementById('showdownSummary');
-const analysisEl = document.getElementById('analysis');
+const analysisEl = document.getElementById('analysis'); // debug JSON inside drawer
+const analysisDrawerEl = document.getElementById('analysisDrawer');
+const drawerToggleBtn = document.getElementById('drawerToggleBtn');
+const drawerHeroPosEl = document.getElementById('drawerHeroPos');
+const drawerCoreMathEl = document.getElementById('drawerCoreMath');
+const drawerHandTextureEl = document.getElementById('drawerHandTexture');
+const drawerHandStrengthEl = document.getElementById('drawerHandStrength');
+const drawerStatsEl = document.getElementById('drawerStats');
 let lastPotMath = null;
 let lastStats = null;
+let lastBoardTexture = null;
+let lastHandLabel = null;
+let lastOuts = null;
+let lastHandStrength = null;
+let lastContext = null;
+let drawerOpen = false;
+let drawerUserPinnedClosed = false;
 
 // State
 let ws;
@@ -122,6 +136,146 @@ function renderState(table) {
   renderPlayers(table.players, table.to_act);
   // Hide any prior showdown summary when new snapshot arrives
   if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
+}
+
+function openDrawer(auto = false) {
+  if (!analysisDrawerEl) return;
+  if (auto && drawerUserPinnedClosed) return;
+  analysisDrawerEl.classList.remove('collapsed');
+  drawerOpen = true;
+}
+
+function closeDrawer() {
+  if (!analysisDrawerEl) return;
+  analysisDrawerEl.classList.add('collapsed');
+  drawerOpen = false;
+}
+
+function renderAnalysisDrawer() {
+  if (!analysisDrawerEl) return;
+
+  // Core Math
+  if (drawerCoreMathEl) {
+    drawerCoreMathEl.innerHTML = '';
+    if (lastPotMath) {
+      const { to_call, pot, spr } = lastPotMath;
+      const p1 = document.createElement('p');
+      p1.textContent = `To call: $${Number(to_call ?? 0)}`;
+      const p2 = document.createElement('p');
+      p2.textContent = `Pot: $${Number(pot ?? 0)}`;
+      const p3 = document.createElement('p');
+      p3.textContent = `SPR: ${Number(spr ?? 0).toFixed(2)}`;
+      drawerCoreMathEl.appendChild(p1);
+      drawerCoreMathEl.appendChild(p2);
+      drawerCoreMathEl.appendChild(p3);
+    } else {
+      const p = document.createElement('p');
+      p.textContent = 'Waiting for decision...';
+      drawerCoreMathEl.appendChild(p);
+    }
+  }
+
+  // Hand & Texture
+  if (drawerHandTextureEl) {
+    drawerHandTextureEl.innerHTML = '';
+    const pHand = document.createElement('p');
+    pHand.textContent = `Hand: ${lastHandLabel || '—'}`;
+    drawerHandTextureEl.appendChild(pHand);
+
+    const pTex = document.createElement('p');
+    if (lastBoardTexture) {
+      const flags = [];
+      if (lastBoardTexture.paired) flags.push('paired');
+      if (lastBoardTexture.monotone) flags.push('monotone');
+      if (lastBoardTexture.two_tone) flags.push('two-tone');
+      if (lastBoardTexture.straighty) flags.push('straighty');
+      pTex.textContent = `Texture: ${flags.length ? flags.join(' · ') : 'normal'}`;
+    } else {
+      pTex.textContent = 'Texture: —';
+    }
+    drawerHandTextureEl.appendChild(pTex);
+
+    const pOuts = document.createElement('p');
+    if (lastOuts && lastOuts.outs > 0) {
+      const parts = [];
+      if (lastOuts.flush_draw) parts.push('flush draw');
+      if (lastOuts.oesd) parts.push('OESD');
+      if (lastOuts.combo) parts.push('combo');
+      pOuts.textContent = `Draws: ${parts.join(' + ')} (${lastOuts.outs} outs)`;
+    } else {
+      pOuts.textContent = 'Draws: —';
+    }
+    drawerHandTextureEl.appendChild(pOuts);
+  }
+
+  // Hand Strength
+  if (drawerHandStrengthEl) {
+    drawerHandStrengthEl.innerHTML = '';
+    const p = document.createElement('p');
+    if (lastHandStrength && lastHandStrength.hand_strength_pct != null) {
+      p.textContent = `Strength: ${Number(lastHandStrength.hand_strength_pct).toFixed(1)}%`;
+    } else {
+      p.textContent = 'Strength: —';
+    }
+    drawerHandStrengthEl.appendChild(p);
+
+    if (lastHandStrength && lastHandStrength.degraded) {
+      const p2 = document.createElement('p');
+      p2.textContent = `Status: degraded (${lastHandStrength.reason || 'timeout'})`;
+      drawerHandStrengthEl.appendChild(p2);
+    }
+  }
+
+  // Human Stats
+  if (drawerStatsEl) {
+    drawerStatsEl.innerHTML = '';
+    if (lastStats) {
+      const n = Number(lastStats.vpip_voluntary || 0);
+      const d = Number(lastStats.vpip_opportunities || 0);
+      const vpipPct = d > 0 ? Math.round((n * 100) / d) : 0;
+      const r = Number(lastStats.pfr_raises || 0);
+      const rd = Number(lastStats.pfr_opportunities || d || 0);
+      const pfrPct = rd > 0 ? Math.round((r * 100) / rd) : 0;
+      const agg = Number(lastStats.afq_agg || 0);
+      const tot = Number(lastStats.afq_total || 0);
+      const afqPct = tot > 0 ? Math.round((agg * 100) / tot) : 0;
+
+      const p1 = document.createElement('p');
+      p1.textContent = `VPIP: ${vpipPct}% (${n}/${d} hands)`;
+      const p2 = document.createElement('p');
+      p2.textContent = `PFR: ${pfrPct}% (${r}/${rd} hands)`;
+      const p3 = document.createElement('p');
+      p3.textContent = `AFq: ${afqPct}% (${agg}/${tot} actions)`;
+
+      drawerStatsEl.appendChild(p1);
+      drawerStatsEl.appendChild(p2);
+      drawerStatsEl.appendChild(p3);
+    } else {
+      const p = document.createElement('p');
+      p.textContent = 'No stats yet';
+      drawerStatsEl.appendChild(p);
+    }
+  }
+
+  // Hero position
+  if (drawerHeroPosEl) {
+    const pos = lastContext && lastContext.hero_position;
+    drawerHeroPosEl.textContent = pos || '';
+  }
+
+  // Debug JSON
+  if (analysisEl) {
+    const debugObj = {
+      pot_math: lastPotMath,
+      board_texture: lastBoardTexture,
+      hand: lastHandLabel,
+      outs: lastOuts,
+      stats: lastStats,
+      context: lastContext,
+      hand_strength: lastHandStrength,
+    };
+    analysisEl.textContent = JSON.stringify(debugObj, null, 2);
+  }
 }
 
 function renderActions(legal) {
@@ -327,41 +481,32 @@ function handleMessage(msg) {
     case 'snapshot':
       lastSnapshot = msg;
       renderState(msg.table);
-      if (analysisEl) analysisEl.textContent = '';
       lastPotMath = null;
+      lastStats = null;
+      lastBoardTexture = null;
+      lastHandLabel = null;
+      lastOuts = null;
+      lastHandStrength = null;
+      lastContext = null;
+      renderAnalysisDrawer();
       break;
       
     case 'prompt':
       renderActions(msg.legal_actions || []);
       log(`Your turn - ${msg.legal_actions?.length || 0} options`);
-      // MVP v0.1: dump raw pot_math JSON if present
       try {
-        const potMath = msg.analysis?.pot_math || null;
-        const stats = msg.analysis?.stats || null;
-        if (analysisEl) {
-          lastPotMath = potMath;
-          lastStats = stats;
-          if (potMath) {
-            const obj = { pot_math: potMath, hand_strength: 'computing…' };
-            if (stats) {
-              obj.stats = stats;
-              const n = Number(stats.vpip_voluntary||0);
-              const d = Number(stats.vpip_opportunities||0);
-              obj.vpip_display = `VPIP: ${d>0?Math.round((n*100)/d):0}% (${n}/${d} hands)`;
-              const r = Number(stats.pfr_raises||0);
-              const rd = Number(stats.pfr_opportunities||d||0);
-              obj.pfr_display = `PFR: ${rd>0?Math.round((r*100)/rd):0}% (${r}/${rd} hands)`;
-              const agg = Number(stats.afq_agg||0);
-              const tot = Number(stats.afq_total||0);
-              obj.afq_display = `AFq: ${tot>0?Math.round((agg*100)/tot):0}% (${agg}/${tot} actions)`;
-            }
-            analysisEl.textContent = JSON.stringify(obj, null, 2);
-          } else {
-            analysisEl.textContent = 'computing…';
-          }
-        }
+        const analysis = msg.analysis || {};
+        lastPotMath = analysis.pot_math || null;
+        lastStats = analysis.stats || null;
+        lastBoardTexture = analysis.board_texture || null;
+        lastHandLabel = analysis.hand && analysis.hand.label ? analysis.hand.label : null;
+        lastOuts = analysis.outs || null;
+        lastContext = analysis.context || null;
+        lastHandStrength = null; // will be filled by async analysis message
+        renderAnalysisDrawer();
+        openDrawer(true);
       } catch (e) {
-        if (analysisEl) analysisEl.textContent = '';
+        // ignore
       }
       break;
       
@@ -381,6 +526,8 @@ function handleMessage(msg) {
       ).join(', ');
       log(`Hand complete: ${results}`);
       if (nextHandBtn) nextHandBtn.style.display = 'inline-block';
+      // Auto-collapse drawer at hand end, but keep stats
+      closeDrawer();
       break;
       
     case 'session_end':
@@ -389,6 +536,7 @@ function handleMessage(msg) {
       if (nextHandBtn) nextHandBtn.style.display = 'none';
       if (restartBtn) restartBtn.style.display = 'inline-block';
       log(`Session ended: ${msg.reason}`);
+      closeDrawer();
       break;
       
     case 'error':
@@ -402,27 +550,8 @@ function handleMessage(msg) {
       // Merge last pot_math with hand_strength update
       try {
         const hs = msg.hand_strength || null;
-        if (analysisEl) {
-          const obj = {};
-          if (lastPotMath) obj.pot_math = lastPotMath;
-          obj.hand_strength = hs || { hand_strength_pct: null, reason: '—' };
-          obj.hand_strength_display = (hs && hs.hand_strength_pct != null)
-            ? (Number(hs.hand_strength_pct).toFixed(1) + '%')
-            : '—';
-          if (lastStats) {
-            obj.stats = lastStats;
-            const n = Number(lastStats.vpip_voluntary||0);
-            const d = Number(lastStats.vpip_opportunities||0);
-            obj.vpip_display = `VPIP: ${d>0?Math.round((n*100)/d):0}% (${n}/${d} hands)`;
-            const r = Number(lastStats.pfr_raises||0);
-            const rd = Number(lastStats.pfr_opportunities||d||0);
-            obj.pfr_display = `PFR: ${rd>0?Math.round((r*100)/rd):0}% (${r}/${rd} hands)`;
-            const agg = Number(lastStats.afq_agg||0);
-            const tot = Number(lastStats.afq_total||0);
-            obj.afq_display = `AFq: ${tot>0?Math.round((agg*100)/tot):0}% (${agg}/${tot} actions)`;
-          }
-          analysisEl.textContent = JSON.stringify(obj, null, 2);
-        }
+        lastHandStrength = hs;
+        renderAnalysisDrawer();
       } catch (e) {
         // ignore
       }
@@ -478,6 +607,18 @@ if (restartBtn) {
       log(`Restart error: ${e}`);
     } finally {
       restartBtn.disabled = false;
+    }
+  };
+}
+
+if (drawerToggleBtn) {
+  drawerToggleBtn.onclick = () => {
+    if (drawerOpen) {
+      closeDrawer();
+      drawerUserPinnedClosed = true;
+    } else {
+      drawerUserPinnedClosed = false;
+      openDrawer(false);
     }
   };
 }

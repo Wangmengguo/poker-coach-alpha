@@ -11,7 +11,7 @@ from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
 
 from .bot_manager import BotManager
-from .analysis.core import compute_pot_math
+from .analysis.core import compute_board_texture, compute_outs, compute_pot_math, describe_hand
 from .analysis.stats import (
     HumanStats,
     build_stats_payload,
@@ -718,6 +718,34 @@ class TableEngine:
                 except Exception:
                     pot_math = None
 
+                # Board texture and hero hand/outs derived from current board + hero hole cards
+                board_texture = None
+                hero_hand_label = None
+                outs_payload = None
+                board_cards: List[str] = []
+                try:
+                    for cards in getattr(self.state, "board_cards", []) or []:
+                        for c in cards or []:
+                            board_cards.append(str(c))
+                    board_texture = compute_board_texture(board_cards)
+                except Exception:
+                    board_texture = None
+
+                try:
+                    hole_cards = list(getattr(self.state, "hole_cards", []) or [])
+                    hero_cards: List[str] = []
+                    if 0 <= idx < len(hole_cards):
+                        hero_cards = [str(c) for c in (hole_cards[idx] or [])]
+                    if hero_cards:
+                        hero_hand_label = describe_hand(hero_cards, board_cards)
+                        # Only compute outs on flop/turn; river/preflop/showdown treat as 0/omitted
+                        street_name = self._street_name()
+                        if street_name in ("flop", "turn"):
+                            outs_payload = compute_outs(hero_cards, board_cards)
+                except Exception:
+                    hero_hand_label = None
+                    outs_payload = None
+
                 # MVP v0.3: include human VPIP/PFR/AFq stats and count preflop opportunity
                 stats_payload = None
                 try:
@@ -731,6 +759,16 @@ class TableEngine:
                 except Exception:
                     stats_payload = None
 
+                # Context: hero's position label for drawer UI convenience
+                context_payload = None
+                try:
+                    positions = self._positions_map()
+                    hero_pos = positions.get(str(seat))
+                    if hero_pos:
+                        context_payload = {"hero_position": hero_pos}
+                except Exception:
+                    context_payload = None
+
                 prompt = {
                     "type": "prompt",
                     "seq": seq,
@@ -738,7 +776,19 @@ class TableEngine:
                     "legal_actions": la,
                     "analysis": {
                         **({"pot_math": pot_math} if pot_math is not None else {}),
+                        **(
+                            {"board_texture": board_texture}
+                            if board_texture is not None
+                            else {}
+                        ),
+                        **(
+                            {"hand": {"label": hero_hand_label}}
+                            if hero_hand_label is not None
+                            else {}
+                        ),
+                        **({"outs": outs_payload} if outs_payload is not None else {}),
                         **({"stats": stats_payload} if stats_payload is not None else {}),
+                        **({"context": context_payload} if context_payload is not None else {}),
                     },
                 }
                 messages.append(prompt)
