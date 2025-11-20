@@ -213,7 +213,15 @@ function renderAnalysisDrawer() {
     drawerHandStrengthEl.innerHTML = '';
     const p = document.createElement('p');
     if (lastHandStrength && lastHandStrength.hand_strength_pct != null) {
-      p.textContent = `Strength: ${Number(lastHandStrength.hand_strength_pct).toFixed(1)}%`;
+      const raw = Number(lastHandStrength.hand_strength_pct);
+      const approx = Number.isFinite(raw) ? Math.round(raw) : null;
+      if (lastHandStrength.model === 'preflop_lookup') {
+        p.textContent = approx != null ? `Preflop strength: ~${approx}%` : 'Preflop strength: —';
+      } else {
+        p.textContent = approx != null ? `Strength: ~${approx}%` : 'Strength: —';
+      }
+    } else if (lastHandStrength && lastHandStrength.reason === 'preflop_unavailable') {
+      p.textContent = 'Strength: (preflop – not computed)';
     } else {
       p.textContent = 'Strength: —';
     }
@@ -222,6 +230,10 @@ function renderAnalysisDrawer() {
     if (lastHandStrength && lastHandStrength.degraded) {
       const p2 = document.createElement('p');
       p2.textContent = `Status: degraded (${lastHandStrength.reason || 'timeout'})`;
+      drawerHandStrengthEl.appendChild(p2);
+    } else if (!lastHandStrength || lastHandStrength.reason !== 'preflop_unavailable') {
+      const p2 = document.createElement('p');
+      p2.textContent = 'Estimate via Monte Carlo (approximate)';
       drawerHandStrengthEl.appendChild(p2);
     }
   }

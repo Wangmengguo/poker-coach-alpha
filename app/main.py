@@ -61,6 +61,9 @@ _engines: Dict[str, TableEngine] = {
     DEFAULT_TABLE_ID: TableEngine(EngineConfig(session_id=DEFAULT_TABLE_ID))
 }
 
+# Simple in-memory cache for hand-strength results keyed by table/hand/street/hero state
+_hand_strength_cache: Dict[tuple, HandStrengthResult] = {}
+
 
 async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
     """Compute hand strength asynchronously and broadcast an analysis update.
@@ -88,21 +91,71 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
         except Exception:
             players = 0
 
-        with anyio.move_on_after(0.1) as scope:  # 100ms budget
-            result: HandStrengthResult = await anyio.to_thread.run_sync(
-                compute_hand_strength, engine.state, idx, 100
+        # Build a stable cache key for current decision state
+        cache_key = None
+        try:
+            street_idx = getattr(engine.state, "street_index", None)
+            board_cards: list[str] = []
+            for cards in getattr(engine.state, "board_cards", []) or []:
+                for c in cards or []:
+                    board_cards.append(str(c))
+            hole_cards = []
+            all_holes = list(getattr(engine.state, "hole_cards", []) or [])
+            if 0 <= idx < len(all_holes):
+                hole_cards = [str(c) for c in (all_holes[idx] or [])]
+            hand_id = getattr(engine, "hand_index", 0)
+            cache_key = (
+                table_id,
+                hand_id,
+                seat,
+                street_idx,
+                tuple(board_cards),
+                tuple(hole_cards),
+                players,
             )
-        degraded = False
-        if scope.cancel_called:  # timed out
-            result = HandStrengthResult(
-                hand_strength_pct=None,
-                model="pokerkit.calculate_hand_strength",
-                sample_count=100,
-                players=players,
-                degraded=True,
-                reason="timeout",
-            )
-            degraded = True
+        except Exception:
+            cache_key = None
+
+        # Per-street sample_count budget tuned for a ~300ms time-box per
+        # evaluation on a typical dev machine.
+        try:
+            street_idx = getattr(engine.state, "street_index", None)
+        except Exception:
+            street_idx = None
+        if street_idx == 0:  # preflop (lookup, kept for API symmetry)
+            sample_count = 400
+        elif street_idx == 1:  # flop
+            sample_count = 400
+        elif street_idx == 2:  # turn
+            sample_count = 400
+        else:  # river or unknown
+            sample_count = 400
+
+        # Cache hit: reuse previous result
+        if cache_key is not None and cache_key in _hand_strength_cache:
+            result = _hand_strength_cache[cache_key]
+            degraded = False
+        else:
+            # Compute with timeout and offload to a thread
+            with anyio.move_on_after(0.3) as scope:  # 300ms budget
+                result = await anyio.to_thread.run_sync(
+                    compute_hand_strength, engine.state, idx, sample_count
+                )
+            degraded = False
+            if scope.cancel_called:  # timed out
+                result = HandStrengthResult(
+                    hand_strength_pct=None,
+                    model="pokerkit.calculate_hand_strength",
+                    sample_count=sample_count,
+                    players=players,
+                    degraded=True,
+                    reason="timeout",
+                )
+                degraded = True
+            # Only cache non-degraded successful results
+            if cache_key is not None and not (result.degraded or degraded):
+                _hand_strength_cache[cache_key] = result
+
         msg = {
             "type": "analysis",
             "seq": engine.next_sequence(),

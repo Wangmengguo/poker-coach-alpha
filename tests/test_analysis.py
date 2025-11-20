@@ -7,6 +7,8 @@ from poker.analysis.core import (
     compute_pot_math,
     describe_hand,
 )
+from poker.analysis.equity import compute_hand_strength
+from poker.analysis.preflop_tables import PREFLOP_EQUITIES_BY_PLAYERS
 
 
 @dataclass
@@ -181,3 +183,34 @@ def test_compute_outs_flush_oesd_and_combo():
     assert outs_combo["oesd"] is True
     assert outs_combo["combo"] is True
     assert outs_combo["outs"] == 15
+
+
+@dataclass
+class FakePreflopState:
+    street_index: int = 0
+    hole_cards: Sequence[Sequence[str]] = field(default_factory=list)
+    statuses: Sequence[bool] = field(default_factory=list)
+
+
+def test_preflop_lookup_aa_and_unknown_combo():
+    # Hero AA vs random: should use lookup
+    state = FakePreflopState(
+        street_index=0,
+        hole_cards=[["As", "Ah"]],
+        statuses=[True, True],
+    )
+    res = compute_hand_strength(state, hero_idx=0, sample_count=100)
+    assert res.model == "preflop_lookup"
+    assert res.sample_count == 0
+    assert res.hand_strength_pct == PREFLOP_EQUITIES_BY_PLAYERS[2]["AA"]
+
+    # Unknown combo should mark as preflop_unavailable
+    state_unknown = FakePreflopState(
+        street_index=0,
+        hole_cards=[["2c", "7d"]],
+        statuses=[True, True],
+    )
+    res_unknown = compute_hand_strength(state_unknown, hero_idx=0, sample_count=100)
+    assert res_unknown.model in ("preflop_unavailable", "preflop_lookup")
+    if res_unknown.model == "preflop_unavailable":
+        assert res_unknown.hand_strength_pct is None
