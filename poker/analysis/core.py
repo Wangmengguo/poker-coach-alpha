@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 @dataclass
@@ -24,6 +24,7 @@ def compute_pot_math(state: Any, hero_idx: int) -> Dict[str, Any]:
     Fields:
       - to_call: chips needed to continue
       - pot: base pot (sum of pulled pots)
+      - effective_stack: min(hero stack, max live opponent stack)
       - spr: stack-to-pot ratio vs max-cover opponent (rounded to 2 decimals)
     """
     bets = _safe_list(getattr(state, "bets", []))
@@ -60,7 +61,37 @@ def compute_pot_math(state: Any, hero_idx: int) -> Dict[str, Any]:
     denom = pot if pot > 0 else 1
     spr = round(float(effective_stack) / float(denom), 2) if effective_stack > 0 else 0.0
 
-    return {"to_call": int(to_call), "pot": int(pot), "spr": float(spr)}
+    return {
+        "to_call": int(to_call),
+        "pot": int(pot),
+        "effective_stack": int(effective_stack),
+        "spr": float(spr),
+    }
+
+
+def compute_pot_odds_and_equity_need(
+    pot: int,
+    to_call: int,
+    current_street_bets_sum: int,
+) -> Dict[str, float]:
+    """Calculate pot odds and the break-even equity to call.
+
+    Args:
+        pot: base pot (e.g., sum of state.pot_amounts), excludes current street unpulled bets.
+        to_call: chips the hero must invest to continue (clamped >= 0).
+        current_street_bets_sum: sum of all bets on the current street (sum(state.bets)).
+    """
+    pot_decision = pot + current_street_bets_sum + to_call
+    if pot_decision <= 0 or to_call <= 0:
+        pot_odds_pct = 0.0
+    else:
+        pot_odds_pct = (float(to_call) / float(pot_decision)) * 100.0
+    required_equity_pct = pot_odds_pct
+    return {
+        "pot_decision": float(pot_decision),
+        "pot_odds_pct": round(pot_odds_pct, 1),
+        "required_equity_pct": round(required_equity_pct, 1),
+    }
 
 
 def _short_code(card: Any) -> str:
@@ -365,20 +396,45 @@ def describe_hand(hero_cards: Iterable[str], board: Iterable[str]) -> str:
 
 
 def compute_outs(hero_cards: Iterable[str], board: Iterable[str]) -> Dict[str, Any]:
-    """Compute simplified hero-only outs for flush/OESD/combination draws.
+    """Compute simplified hero-only outs for common straight/flush draws.
 
-    Rules:
+    Rules (MVP-friendly, approximate):
       - Flush draw: 9 outs if hero+board have >=4 of a suit and hero holds
         at least one card of that suit.
       - OESD: 8 outs if hero+board ranks contain a 4-long consecutive chain
         (with wheel support) in which at least one rank is from hero.
+      - Gutshot: 4 outs if hero+board ranks are one card short of a 5-long
+        straight window (inside straight draw) that includes at least one
+        hero rank. This is only considered when there is no OESD.
       - Combo: if both flush draw and OESD, report 15 outs.
+
+    This intentionally does not attempt full deck enumeration or multiway /
+    dirty outs accounting; it is meant to give intuitive, stable numbers for
+    common draw situations.
     """
     hero = _parse_cards(hero_cards)
     board_cards = _parse_cards(board)
     all_cards = hero + board_cards
     if not hero or not board_cards:
-        return {"flush_draw": False, "oesd": False, "combo": False, "outs": 0}
+        return {
+            "flush_draw": False,
+            "oesd": False,
+            "gutshot": False,
+            "combo": False,
+            "outs": 0,
+        }
+
+    # For draw purposes, only consider typical flop/turn situations:
+    # - <3 board cards: no meaningful board texture yet.
+    # - >=5 board cards (river or unusual states): no future cards left.
+    if len(board_cards) < 3 or len(board_cards) >= 5:
+        return {
+            "flush_draw": False,
+            "oesd": False,
+            "gutshot": False,
+            "combo": False,
+            "outs": 0,
+        }
 
     # Suit counts
     suit_counts: Dict[str, int] = {}
@@ -421,6 +477,26 @@ def compute_outs(hero_cards: Iterable[str], board: Iterable[str]) -> Dict[str, A
             if oesd:
                 break
 
+    # Gutshot detection: inside straight draw (one card short of 5 in a row),
+    # only if we do not already have an OESD. We require:
+    #   - a 5-rank window where exactly 4 ranks are present on hero+board
+    #   - at least one of those ranks belongs to hero.
+    gutshot = False
+    if not oesd:
+        uniq_vals = sorted(set(all_vals))
+        if 14 in uniq_vals:
+            uniq_vals = sorted(set(uniq_vals + [1]))
+        hero_vals = {v for _, _, v in hero}
+        if 14 in hero_vals:
+            hero_vals.add(1)
+
+        for start in range(1, 11):  # straight windows: A-5 up to 10-A
+            window = {start + i for i in range(5)}
+            present = window.intersection(uniq_vals)
+            if len(present) == 4 and present.intersection(hero_vals):
+                gutshot = True
+                break
+
     # Outs accounting
     if flush_draw and oesd:
         outs = 15
@@ -431,6 +507,9 @@ def compute_outs(hero_cards: Iterable[str], board: Iterable[str]) -> Dict[str, A
     elif oesd:
         outs = 8
         combo = False
+    elif gutshot:
+        outs = 4
+        combo = False
     else:
         outs = 0
         combo = False
@@ -438,6 +517,31 @@ def compute_outs(hero_cards: Iterable[str], board: Iterable[str]) -> Dict[str, A
     return {
         "flush_draw": bool(flush_draw),
         "oesd": bool(oesd),
+        "gutshot": bool(gutshot),
         "combo": bool(combo),
         "outs": int(outs),
     }
+
+
+def compute_call_ev(
+    to_call: int,
+    pot_decision: int,
+    win_pct: float,
+    tie_pct: float = 0.0,
+) -> float:
+    """Approximate net EV (chip change) of calling on the current street.
+
+    Net outcomes (pot_decision already includes hero's call):
+      - Win:  pot_decision - to_call
+      - Tie:  pot_decision/2 - to_call
+      - Lose: -to_call
+    EV = win% * (pot_decision - to_call)
+         + tie% * (pot_decision/2 - to_call)
+         + lose% * (-to_call)
+       = win% * pot_decision + tie% * (pot_decision / 2) - to_call
+    """
+    win_p = float(win_pct)
+    tie_p = float(tie_pct)
+    win_ev = win_p * float(pot_decision)
+    tie_ev = tie_p * (float(pot_decision) / 2.0)
+    return win_ev + tie_ev - float(to_call)

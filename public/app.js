@@ -19,6 +19,7 @@ const drawerHandTextureEl = document.getElementById('drawerHandTexture');
 const drawerHandStrengthEl = document.getElementById('drawerHandStrength');
 const drawerStatsEl = document.getElementById('drawerStats');
 let lastPotMath = null;
+let lastPotExtra = null;
 let lastStats = null;
 let lastBoardTexture = null;
 let lastHandLabel = null;
@@ -165,9 +166,16 @@ function renderAnalysisDrawer() {
       p2.textContent = `Pot: $${Number(pot ?? 0)}`;
       const p3 = document.createElement('p');
       p3.textContent = `SPR: ${Number(spr ?? 0).toFixed(2)}`;
+      const p4 = document.createElement('p');
+      if (lastPotExtra && typeof lastPotExtra.pot_odds_pct === 'number') {
+        p4.textContent = `Pot odds: ${Number(lastPotExtra.pot_odds_pct).toFixed(1)}%`;
+      } else {
+        p4.textContent = 'Pot odds: —';
+      }
       drawerCoreMathEl.appendChild(p1);
       drawerCoreMathEl.appendChild(p2);
       drawerCoreMathEl.appendChild(p3);
+      drawerCoreMathEl.appendChild(p4);
     } else {
       const p = document.createElement('p');
       p.textContent = 'Waiting for decision...';
@@ -279,6 +287,7 @@ function renderAnalysisDrawer() {
   if (analysisEl) {
     const debugObj = {
       pot_math: lastPotMath,
+      pot_extra: lastPotExtra,
       board_texture: lastBoardTexture,
       hand: lastHandLabel,
       outs: lastOuts,
@@ -494,6 +503,7 @@ function handleMessage(msg) {
       lastSnapshot = msg;
       renderState(msg.table);
       lastPotMath = null;
+      lastPotExtra = null;
       lastStats = null;
       lastBoardTexture = null;
       lastHandLabel = null;
@@ -509,6 +519,7 @@ function handleMessage(msg) {
       try {
         const analysis = msg.analysis || {};
         lastPotMath = analysis.pot_math || null;
+        lastPotExtra = analysis.pot_extra || null;
         lastStats = analysis.stats || null;
         lastBoardTexture = analysis.board_texture || null;
         lastHandLabel = analysis.hand && analysis.hand.label ? analysis.hand.label : null;

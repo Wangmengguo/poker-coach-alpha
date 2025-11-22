@@ -1,13 +1,20 @@
 from dataclasses import dataclass, field
 from typing import List, Sequence
 
+import pytest
+
 from poker.analysis.core import (
     compute_board_texture,
+    compute_call_ev,
     compute_outs,
     compute_pot_math,
+    compute_pot_odds_and_equity_need,
     describe_hand,
 )
-from poker.analysis.equity import compute_hand_strength
+from poker.analysis.compose import compose_analysis
+from poker.analysis.models import DecisionContext
+from poker.analysis.equity import compute_hand_strength, compute_equity_vs_range
+from poker.analysis.ranges import build_default_preflop_range
 from poker.analysis.preflop_tables import PREFLOP_EQUITIES_BY_PLAYERS
 
 
@@ -32,6 +39,7 @@ def test_compute_pot_math_basic_two_player():
 
     assert result["to_call"] == 3  # 5 - 2
     assert result["pot"] == 30
+    assert result["effective_stack"] == 80
     # effective_stack = min(100, 80) = 80; SPR = 80 / 30 ≈ 2.67
     assert result["spr"] == 2.67
 
@@ -48,6 +56,7 @@ def test_compute_pot_math_no_bets_no_pot():
 
     assert result["to_call"] == 0
     assert result["pot"] == 0
+    assert result["effective_stack"] == 100
     # Base pot is zero; by definition we divide by max(1, pot),
     # so SPR falls back to effective_stack / 1.
     assert result["spr"] == 100.0
@@ -67,7 +76,116 @@ def test_compute_pot_math_ignores_busted_opponents():
     # No live opponent with stack → effective_stack = 0 → SPR = 0
     assert result["to_call"] == 0
     assert result["pot"] == 40
+    assert result["effective_stack"] == 0
     assert result["spr"] == 0.0
+
+
+def test_compute_pot_odds_and_equity_need_basic():
+    res = compute_pot_odds_and_equity_need(pot=30, to_call=10, current_street_bets_sum=0)
+    assert res["pot_decision"] == 40.0
+    assert res["pot_odds_pct"] == 25.0
+    assert res["required_equity_pct"] == 25.0
+
+
+def test_compute_pot_odds_handles_zero():
+    res = compute_pot_odds_and_equity_need(pot=0, to_call=0, current_street_bets_sum=0)
+    assert res["pot_decision"] == 0.0
+    assert res["pot_odds_pct"] == 0.0
+    assert res["required_equity_pct"] == 0.0
+
+
+def test_compute_call_ev_with_and_without_tie():
+    # even-money spot: EV ~ 0
+    ev_even = compute_call_ev(to_call=50, pot_decision=100, win_pct=0.5, tie_pct=0.0)
+    assert ev_even == 0.0
+
+    # profitable call with tie component
+    ev_tie = compute_call_ev(to_call=50, pot_decision=200, win_pct=0.30, tie_pct=0.10)
+    # Outcomes: win +150 (30%), tie +50 (10%), lose -50 (60%) => EV = 20
+    assert ev_tie == pytest.approx(20.0)
+
+
+# ---- compose_analysis minimal integration ----
+
+
+@dataclass
+class FakeStateCompose:
+    bets: Sequence[int] = field(default_factory=list)
+    stacks: Sequence[int] = field(default_factory=list)
+    pot_amounts: Sequence[int] = field(default_factory=list)
+    statuses: Sequence[bool] = field(default_factory=list)
+    board_cards: Sequence[Sequence[str]] = field(default_factory=list)
+    hole_cards: Sequence[Sequence[str]] = field(default_factory=list)
+    street_index: int = 0
+
+
+def test_compose_analysis_builds_payload_and_dc():
+    state = FakeStateCompose(
+        bets=[5, 5],
+        stacks=[100, 120],
+        pot_amounts=[30],
+        statuses=[True, True],
+        board_cards=[["As", "Kd", "2c"]],
+        hole_cards=[["Ah", "Ad"], ["7s", "7c"]],
+        street_index=1,  # flop
+    )
+    positions = {"1": "BTN", "2": "SB"}
+
+    dc, payload = compose_analysis(
+        state,
+        hero_idx=0,
+        hero_seat=1,
+        session_stats=None,
+        positions_map=positions,
+        include_hand_strength=False,
+    )
+
+    # DecisionContext assertions
+    assert isinstance(dc, DecisionContext)
+    assert dc.to_call == 0
+    assert dc.pot == 30
+    assert dc.current_street_bets_sum == 10
+    assert dc.pot_decision == 40.0
+    assert dc.pot_odds_pct == 0.0  # free call
+    assert dc.effective_stack == 100
+    assert dc.spr == pytest.approx(3.33, rel=1e-2)
+    assert dc.hand_label in ("Set", "Trips")
+    assert dc.outs == 0
+    assert dc.hero_position == "BTN"
+    assert dc.players_count == 2
+
+    # Payload assertions (prompt-friendly)
+    assert "pot_math" in payload
+    assert payload["pot_math"]["effective_stack"] == 100
+    assert payload.get("pot_extra", {}).get("pot_decision") == 40.0
+    assert payload.get("hand", {}).get("label") in ("Set", "Trips")
+    assert payload.get("outs", {}).get("outs", 0) == 0
+
+
+def test_compute_equity_vs_range_basic():
+    # Hero AA vs very weak range -> equity should be well above 50%
+    class FakeStateEq(FakeStateCompose):
+        pass
+
+    state = FakeStateCompose(
+        bets=[0, 0],
+        stacks=[100, 100],
+        pot_amounts=[0],
+        statuses=[True, True],
+        board_cards=[],
+        hole_cards=[["Ah", "Ad"], ["", ""]],
+        street_index=0,
+    )
+    weak_range = {"72o": 1.0}
+
+    import random
+
+    random.seed(42)
+    res = compute_equity_vs_range(state, hero_idx=0, villain_range=weak_range, sample_count=200, rng_seed=42)
+    assert res.degraded is False
+    assert res.players == 2
+    assert res.win_pct > 70.0  # AA should dominate 72o
+    assert res.win_pct <= 100.0
 
 
 def test_compute_board_texture_empty_board():
@@ -183,6 +301,15 @@ def test_compute_outs_flush_oesd_and_combo():
     assert outs_combo["oesd"] is True
     assert outs_combo["combo"] is True
     assert outs_combo["outs"] == 15
+
+
+def test_compute_outs_gutshot_simple():
+    # Gutshot: 7-8 with T-J on board (plus a blank) → need a 9
+    outs_gutshot = compute_outs(["7d", "8c"], ["Jh", "Tc", "2s"])
+    assert outs_gutshot["flush_draw"] is False
+    assert outs_gutshot["oesd"] is False
+    assert outs_gutshot.get("gutshot") is True
+    assert outs_gutshot["outs"] == 4
 
 
 @dataclass

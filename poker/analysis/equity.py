@@ -8,6 +8,7 @@ from pokerkit.hands import StandardHighHand  # type: ignore
 from pokerkit.utilities import Deck  # type: ignore
 
 from .preflop_tables import PREFLOP_EQUITIES_BY_PLAYERS
+from .ranges import Range
 
 
 @dataclass
@@ -21,6 +22,7 @@ class HandStrengthResult:
 
 
 _RANK_ORDER = "23456789TJQKA"
+_SUITS = ["s", "h", "d", "c"]
 
 
 def _short_code(card: Any) -> str:
@@ -70,6 +72,164 @@ def _normalize_preflop_key(hero: Tuple) -> Optional[str]:
         r1, r2, s1, s2 = r2, r1, s2, s1
     suited = s1 == s2
     return f"{r1}{r2}{'s' if suited else 'o'}"
+
+
+def _expand_range_key(key: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Parse a shorthand like 'AKs', 'AQo', 'TT' into (hi, lo, suited_flag)."""
+    if len(key) == 2:  # pair e.g., 'AA'
+        return key[0], key[1], None
+    if len(key) == 3:
+        r1, r2, flag = key[0], key[1], key[2].lower()
+        return r1, r2, flag
+    return None
+
+
+def _combos_for_key(key: str) -> list[Tuple[str, str]]:
+    """Generate all hole-card combos matching a shorthand key."""
+    parsed = _expand_range_key(key)
+    if not parsed:
+        return []
+    r1, r2, flag = parsed
+    cards = []
+    if r1 == r2:
+        # Pair: 6 combos
+        for i in range(len(_SUITS)):
+            for j in range(i + 1, len(_SUITS)):
+                cards.append((f"{r1}{_SUITS[i]}", f"{r2}{_SUITS[j]}"))
+        return cards
+    # Non-pair
+    if flag == "s":  # suited
+        for s in _SUITS:
+            cards.append((f"{r1}{s}", f"{r2}{s}"))
+    elif flag == "o":  # offsuit
+        for s1 in _SUITS:
+            for s2 in _SUITS:
+                if s1 != s2:
+                    cards.append((f"{r1}{s1}", f"{r2}{s2}"))
+    else:
+        # If unspecified, allow both suited and offsuit
+        for s1 in _SUITS:
+            for s2 in _SUITS:
+                if r1 == r2 and s1 >= s2:
+                    continue
+                cards.append((f"{r1}{s1}", f"{r2}{s2}"))
+    return cards
+
+
+def _deck_without(dead: Iterable[str]) -> list[str]:
+    base = [r + s for r in _RANK_ORDER for s in _SUITS]
+    dead_set = {c.lower() for c in dead}
+    return [c for c in base if c.lower() not in dead_set]
+
+
+def _score_five(cards5: Iterable[str]) -> Tuple[int, list[int]]:
+    """Simple 5-card evaluator returning (category, kickers list).
+
+    Categories:
+      8 SF, 7 Quads, 6 Full House, 5 Flush, 4 Straight, 3 Trips, 2 Two Pair, 1 Pair, 0 High Card.
+    """
+    # map ranks to values with A=14
+    ranks = []
+    suits = []
+    for c in cards5:
+        r, s = c[0], c[1]
+        ranks.append(_RANK_ORDER.index(r) + 2)
+        suits.append(s)
+    ranks.sort()
+    from collections import Counter
+
+    rc = Counter(ranks)
+    counts = sorted(rc.items(), key=lambda x: (-x[1], -x[0]))
+    is_flush = len(set(suits)) == 1
+    # Straight check with wheel support
+    unique_r = sorted(set(ranks))
+    is_straight = False
+    high_straight = 0
+    if len(unique_r) == 5:
+        if unique_r[-1] - unique_r[0] == 4:
+            is_straight = True
+            high_straight = unique_r[-1]
+        elif unique_r == [2, 3, 4, 5, 14]:
+            is_straight = True
+            high_straight = 5
+
+    if is_straight and is_flush:
+        return 8, [high_straight]
+    if counts[0][1] == 4:
+        quad = counts[0][0]
+        kicker = max(r for r in ranks if r != quad)
+        return 7, [quad, kicker]
+    if counts[0][1] == 3 and counts[1][1] == 2:
+        return 6, [counts[0][0], counts[1][0]]
+    if is_flush:
+        return 5, sorted(ranks, reverse=True)
+    if is_straight:
+        return 4, [high_straight]
+    if counts[0][1] == 3:
+        trips = counts[0][0]
+        kickers = sorted([r for r in ranks if r != trips], reverse=True)
+        return 3, [trips] + kickers
+    if counts[0][1] == 2 and counts[1][1] == 2:
+        pairs = sorted([counts[0][0], counts[1][0]], reverse=True)
+        kicker = max(r for r in ranks if r not in pairs)
+        return 2, pairs + [kicker]
+    if counts[0][1] == 2:
+        pair = counts[0][0]
+        kickers = sorted([r for r in ranks if r != pair], reverse=True)
+        return 1, [pair] + kickers
+    return 0, sorted(ranks, reverse=True)
+
+
+def _best5_score(seven: Iterable[str]) -> Tuple[int, list[int]]:
+    from itertools import combinations
+
+    best = None
+    for combo in combinations(seven, 5):
+        score = _score_five(combo)
+        if best is None or score > best:
+            best = score
+    return best or (0, [])
+
+
+def _sample_villain_hand(range_: Range, dead: Iterable[str], rnd) -> Optional[Tuple[str, str]]:
+    combos: list[Tuple[str, str]] = []
+    weights: list[float] = []
+    dead_set = {c.lower() for c in dead}
+    for key, w in range_.items():
+        for h1, h2 in _combos_for_key(key):
+            if h1.lower() in dead_set or h2.lower() in dead_set or h1.lower() == h2.lower():
+                continue
+            combos.append((h1, h2))
+            weights.append(float(max(w, 0.0)))
+    if not combos or sum(weights) <= 0:
+        return None
+    # weighted choice
+    total = sum(weights)
+    r = rnd.random() * total
+    acc = 0.0
+    for c, w in zip(combos, weights):
+        acc += w
+        if r <= acc:
+            return c
+    return combos[-1]
+
+
+def _complete_board(board: Iterable[str], deck: list[str], rnd) -> list[str]:
+    need = max(0, 5 - len(board))
+    deck_copy = list(deck)
+    rnd.shuffle(deck_copy)
+    return list(board) + deck_copy[:need]
+
+
+@dataclass
+class EquityResult:
+    win_pct: float
+    tie_pct: float
+    lose_pct: float
+    sample_count: int
+    players: int
+    degraded: bool = False
+    reason: Optional[str] = None
 
 
 
@@ -204,3 +364,75 @@ def compute_hand_strength(state: Any, hero_idx: int, sample_count: int = 100) ->
             degraded=True,
             reason=f"error: {e}",
         )
+
+
+def compute_equity_vs_range(
+    state: Any,
+    hero_idx: int,
+    villain_range: Range,
+    sample_count: int = 200,
+    rng_seed: Optional[int] = None,
+) -> EquityResult:
+    """Monte Carlo equity vs a specific villain range (heads-up only for now)."""
+
+    import random
+
+    rnd = random.Random(rng_seed)
+
+    # Gather hero cards and board
+    hero = _hero_hole_cards(state, hero_idx)
+    board = _flatten_board_cards(state)
+
+    if not hero or len(hero) != 2:
+        return EquityResult(
+            win_pct=0.0,
+            tie_pct=0.0,
+            lose_pct=0.0,
+            sample_count=0,
+            players=0,
+            degraded=True,
+            reason="hero_cards_missing",
+        )
+
+    dead_cards = list(hero) + list(board)
+    wins = ties = losses = 0
+    actual_samples = 0
+
+    for _ in range(max(1, sample_count)):
+        villain_hand = _sample_villain_hand(villain_range, dead_cards, rnd)
+        if villain_hand is None:
+            return EquityResult(
+                win_pct=0.0,
+                tie_pct=0.0,
+                lose_pct=0.0,
+                sample_count=0,
+                players=0,
+                degraded=True,
+                reason="empty_range",
+            )
+        # Build deck minus dead cards and villain hand
+        board_now = list(board)
+        dead_now = dead_cards + list(villain_hand)
+        deck = _deck_without(dead_now)
+        full_board = _complete_board(board_now, deck, rnd)
+
+        hero_score = _best5_score(list(hero) + full_board)
+        villain_score = _best5_score(list(villain_hand) + full_board)
+        if hero_score > villain_score:
+            wins += 1
+        elif hero_score == villain_score:
+            ties += 1
+        else:
+            losses += 1
+        actual_samples += 1
+
+    total = float(max(1, actual_samples))
+    return EquityResult(
+        win_pct=wins * 100.0 / total,
+        tie_pct=ties * 100.0 / total,
+        lose_pct=losses * 100.0 / total,
+        sample_count=actual_samples,
+        players=2,
+        degraded=False,
+        reason=None,
+    )
