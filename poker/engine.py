@@ -11,6 +11,7 @@ from pokerkit import NoLimitTexasHoldem
 from pokerkit.state import Automation, Mode, State
 
 from .bot_manager import BotManager
+from .bots import EquityBot
 from .analysis.compose import compose_analysis
 from .analysis.stats import (
     HumanStats,
@@ -68,6 +69,7 @@ class TableEngine:
         self.hand_start_seat_stacks: Optional[List[int]] = None
         self.sequence_number = 0
         self.bot_manager = BotManager(config.session_id)
+        self.equity_bot = EquityBot()
         self.player_ids: List[str] = [
             ("human" if i + 1 == self.cfg.human_seat else f"bot{i+1}")
             for i in range(self.cfg.seats)
@@ -753,26 +755,12 @@ class TableEngine:
                 # Note: This is sync version, will be made async later
                 la = self.legal_actions()
                 if self.bot_manager.is_bot_seat(seat):
-                    # For now, use simple bot logic until async integration
-                    action = None
-                    # prefer check > call > min raise > fold
-                    for a in la:
-                        if a["type"] == "check":
-                            action = a
-                            break
+                    try:
+                        action = self.equity_bot.choose(self.state, idx, seat, la)
+                    except Exception:
+                        action = None
                     if action is None:
-                        for a in la:
-                            if a["type"] == "call":
-                                action = a
-                                break
-                    if action is None:
-                        raises = [a for a in la if a.get("type") == "raise_to"]
-                        if raises:
-                            raises.sort(key=lambda a: a.get("amount", 0))
-                            action = raises[0]
-                    if action is None and la:
-                        action = la[0]
-                    if action is None:
+                        # Defensive fallback: no-op if we cannot find an action
                         break
                     self.apply_action(action)
                 else:
