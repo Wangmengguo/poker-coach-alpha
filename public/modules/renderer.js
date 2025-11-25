@@ -232,6 +232,7 @@ export class Renderer {
     if (!analysisDrawerEl) return;
     if (auto && this.drawerUserPinnedClosed) return;
     analysisDrawerEl.classList.remove('collapsed');
+    document.body.classList.add('drawer-open');
     this.drawerOpen = true;
   }
 
@@ -239,6 +240,7 @@ export class Renderer {
     const { analysisDrawerEl } = this.cached;
     if (!analysisDrawerEl) return;
     analysisDrawerEl.classList.add('collapsed');
+    document.body.classList.remove('drawer-open');
     this.drawerOpen = false;
   }
 

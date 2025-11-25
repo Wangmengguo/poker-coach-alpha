@@ -731,7 +731,7 @@ button:active {
 
 ### Phase 1.5: 页面布局重构 (Layout Restructure)
 
-**状态**: 📋 待实施  
+**状态**: ✅ 已完成  
 **优先级**: 高 - 影响核心用户体验  
 **MVP 范围说明**:  
 - MVP 必做：P0（牌面显示修复）+ P1（玩家卡片紧凑化、操作栏精简的基础版）  
@@ -926,9 +926,9 @@ body.drawer-open main {
 | ✅ 修复牌面显示格式 | P0 | `engine.py` | 完成 |
 | ✅ 玩家卡片紧凑化 | P1 | `style.css` | 完成 |
 | ✅ 操作栏精简（Slider + 快捷按钮方案 B） | P1 | `actions.js`, `style.css` | 完成 |
-| 🟡 牌桌 aspect-ratio + 座位百分比 | P2 | `style.css` | 待办 |
-| 🟡 抽屉不遮挡主内容 | P2 | `style.css` | 待办 |
-| 🟢 Game Log 折叠 | P3 | `index.html`, `style.css` | 待办 |
+| ✅ 牌桌 aspect-ratio + 座位百分比 | P2 | `style.css` | 完成 |
+| ✅ 抽屉不遮挡主内容 | P2 | `style.css`, `renderer.js` | 完成 |
+| ✅ Game Log 折叠 | P3 | `index.html`, `style.css` | 完成 |
 
 **MVP 完成定义（Frontend DoD）**  
 - 当前阶段：完成 Phase 1（上文已全部 ✅）并落地本表中的 **P0 + 所有 P1 任务**，即可满足 MVP 版本的前端要求。  

@@ -70,6 +70,12 @@ main {
   max-width: 1000px;
   margin: 20px auto;
   padding: 0 16px;
+  transition: margin-right 0.25s ease;
+}
+
+/* When drawer is open, push main content left */
+body.drawer-open main {
+  margin-right: 290px;
 }
 
 /* Screen reader only */
@@ -134,12 +140,13 @@ h1 {
 /* Poker Table */
 .poker-table {
   position: relative;
-  width: 600px;
-  height: 400px;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 16 / 10;
   margin: 0 auto 20px;
   background: radial-gradient(ellipse 80% 60% at 50% 50%, var(--felt-highlight) 0%, var(--felt-green) 40%, var(--felt-dark) 100%);
   border: 4px solid var(--border-accent);
-  border-radius: 200px;
+  border-radius: 50%;
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -209,12 +216,13 @@ h1 {
   width: 78px;
 }
 
-.seat-1 { bottom: -12px; left: 50%; transform: translateX(-50%); }
-.seat-2 { bottom: 18px; right: 18px; }
-.seat-3 { top: 50%; right: -12px; transform: translateY(-50%); }
-.seat-4 { top: -12px; right: 18px; }
-.seat-5 { top: -12px; left: 18px; }
-.seat-6 { top: 50%; left: -12px; transform: translateY(-50%); }
+/* Percentage-based seat positioning for responsive layout */
+.seat-1 { bottom: -2%; left: 50%; transform: translateX(-50%); }
+.seat-2 { bottom: 8%; right: 5%; }
+.seat-3 { top: 50%; right: -2%; transform: translateY(-50%); }
+.seat-4 { top: -2%; right: 10%; }
+.seat-5 { top: -2%; left: 10%; }
+.seat-6 { top: 50%; left: -2%; transform: translateY(-50%); }
 
 /* Game Controls */
 .game-controls {
@@ -409,16 +417,56 @@ h1 {
   outline-offset: 4px;
 }
 
-/* Log section */
+/* Log section (collapsible) */
 .log-section {
   margin-top: 24px;
+  border: 1px solid var(--gray-700);
+  border-radius: 8px;
+  background: var(--bg-elevated);
 }
 
-.log-section h3 {
-  margin-bottom: 10px;
-  font-size: 1rem;
+.log-section summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.log-section summary:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.log-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-section summary::before {
+  content: "▶";
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.log-section[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.log-section summary h3 {
+  margin: 0;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.log-section pre {
+  margin: 0;
+  border-top: 1px solid var(--gray-700);
+  border-radius: 0 0 8px 8px;
 }
 
 pre {
@@ -427,7 +475,7 @@ pre {
   padding: 14px;
   border: 1px solid var(--gray-700);
   border-radius: 8px;
-  max-height: 200px;
+  max-height: 180px;
   overflow-y: auto;
   font-size: 0.8rem;
   line-height: 1.5;
@@ -854,22 +902,13 @@ a:focus-visible,
   }
 
   .poker-table {
-    width: 95vw;
-    max-width: 450px;
-    height: 300px;
-    border-radius: 150px;
+    max-width: 480px;
+    /* aspect-ratio inherited from base */
   }
 
   .seat {
     width: 68px;
   }
-
-  .seat-1 { bottom: -8px; left: 50%; transform: translateX(-50%); }
-  .seat-2 { bottom: 12%; right: 5%; }
-  .seat-3 { top: 50%; right: -5px; transform: translateY(-50%); }
-  .seat-4 { top: -8px; right: 12%; }
-  .seat-5 { top: -8px; left: 12%; }
-  .seat-6 { top: 50%; left: -5px; transform: translateY(-50%); }
 
   .player-info {
     padding: 6px;
@@ -935,16 +974,20 @@ a:focus-visible,
     position: relative;
     padding-top: 18px;
   }
+
+  /* Mobile: don't push main content, drawer overlays */
+  body.drawer-open main {
+    margin-right: 0;
+  }
 }
 
 @media (max-width: 480px) {
   .poker-table {
-    height: 260px;
-    max-width: 360px;
+    max-width: 340px;
   }
 
   .seat {
-    width: 58px;
+    width: 54px;
   }
 
   .player-name {

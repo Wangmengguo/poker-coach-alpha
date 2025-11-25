@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Poker Coach Alpha</title>
-    <link rel="stylesheet" href="/public/style.css?v=7" />
+    <link rel="stylesheet" href="/public/style.css?v=8" />
   </head>
   <body>
     <div id="srAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -100,10 +100,10 @@
         <div id="actions" class="actions"></div>
       </div>
       
-      <div class="log-section">
-        <h3>Game Log</h3>
+      <details class="log-section" open>
+        <summary><h3>Game Log</h3></summary>
         <pre id="log"></pre>
-      </div>
+      </details>
 
       <!-- Analysis Drawer (MVP) -->
       <div id="analysisDrawer" class="analysis-drawer collapsed">
@@ -139,6 +139,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="/public/app.js?v=7"></script>
+    <script type="module" src="/public/app.js?v=8"></script>
   </body>
 </html>
