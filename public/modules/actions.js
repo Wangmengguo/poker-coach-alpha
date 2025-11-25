@@ -103,51 +103,51 @@ export class ActionHandler {
   }
 
   /**
-   * Filter raise presets to show only key amounts (2x, 3x, Pot, All-in).
-   * Returns at most 3 preset buttons to avoid clutter.
+   * Build semantic raise presets: 2x, 3x, Pot, All-in
+   * Based on current pot and bet amounts from legal actions
    */
-  _filterRaisePresets(legal, rangeAction) {
+  _buildRaisePresets(legal, rangeAction) {
     if (!rangeAction) return [];
 
     const min = rangeAction.min ?? 0;
     const max = rangeAction.max ?? Infinity;
     const presets = [];
 
-    // Collect all raise_to with specific amounts
+    // Collect all raise_to with specific amounts to find pot-sized raise
     const allRaises = legal.filter(
       (a) => a.type === 'raise_to' && typeof a.amount === 'number'
     );
-
-    if (allRaises.length === 0) return [];
-
-    // Sort by amount
     allRaises.sort((a, b) => a.amount - b.amount);
 
-    // Find key amounts: smallest (≈2x), middle (≈pot), largest (all-in)
-    const smallest = allRaises[0];
-    const largest = allRaises[allRaises.length - 1];
+    // Calculate 2x and 3x based on min raise
+    const raise2x = min;
+    const raise3x = Math.round(min * 1.5); // Approximation for 3x the bet
 
-    // Always include min raise (2x-ish)
-    if (smallest) {
-      presets.push({ ...smallest, label: `$${smallest.amount}` });
-    }
-
-    // Find a middle option (roughly 3x or pot-sized)
+    // Find pot-sized raise (usually around middle of available raises)
+    let potRaise = null;
     if (allRaises.length > 2) {
       const midIdx = Math.floor(allRaises.length / 2);
-      const mid = allRaises[midIdx];
-      if (mid && mid.amount !== smallest?.amount && mid.amount !== largest?.amount) {
-        presets.push({ ...mid, label: `$${mid.amount}` });
-      }
+      potRaise = allRaises[midIdx]?.amount;
     }
 
-    // Always include all-in if different from others
-    if (largest && largest.amount !== smallest?.amount) {
-      const isAllIn = largest.amount === max;
-      presets.push({
-        ...largest,
-        label: isAllIn ? 'All-in' : `$${largest.amount}`,
-      });
+    // 2x (min raise)
+    if (raise2x >= min && raise2x <= max) {
+      presets.push({ amount: raise2x, label: '2x' });
+    }
+
+    // 3x
+    if (raise3x > raise2x && raise3x <= max) {
+      presets.push({ amount: raise3x, label: '3x' });
+    }
+
+    // Pot (if distinct from 2x/3x)
+    if (potRaise && potRaise > raise3x && potRaise < max) {
+      presets.push({ amount: potRaise, label: 'Pot' });
+    }
+
+    // All-in
+    if (max !== Infinity && max > (potRaise ?? raise3x)) {
+      presets.push({ amount: max, label: 'All-in' });
     }
 
     return presets;
@@ -167,7 +167,7 @@ export class ActionHandler {
       }
     }
 
-    // === Primary Actions Row ===
+    // === Primary Actions Row (Fold + Call/Check) ===
     const primaryRow = document.createElement('div');
     primaryRow.className = 'actions-primary';
 
@@ -200,75 +200,116 @@ export class ActionHandler {
 
     this.actionsEl.appendChild(primaryRow);
 
-    // === Raise Section ===
+    // === Raise Section (Single row: [2x][3x][Pot][All-in] | $min[slider]$max | $amt [Raise]) ===
     if (rangeAction) {
+      const min = rangeAction.min ?? 0;
+      const max = rangeAction.max ?? min * 10;
+
       const raiseSection = document.createElement('div');
       raiseSection.className = 'actions-raise';
 
-      // Filtered preset buttons (max 3)
-      const presets = this._filterRaisePresets(legal, rangeAction);
+      // Quick preset buttons: [2x] [3x] [Pot] [All-in]
+      const presets = this._buildRaisePresets(legal, rangeAction);
       if (presets.length > 0) {
-        const presetsRow = document.createElement('div');
-        presetsRow.className = 'raise-presets';
+        const presetsGroup = document.createElement('div');
+        presetsGroup.className = 'raise-presets';
 
         for (const preset of presets) {
           const btn = document.createElement('button');
           btn.textContent = preset.label;
           btn.className = 'raise-btn raise-preset';
-          btn.setAttribute('aria-label', `Raise to ${preset.amount} dollars`);
-          btn.onclick = () => this.sendAction({ type: 'raise_to', amount: preset.amount });
-          presetsRow.appendChild(btn);
+          btn.setAttribute('aria-label', `Raise ${preset.label} to ${preset.amount} dollars`);
+          btn.dataset.amount = preset.amount;
+          presetsGroup.appendChild(btn);
         }
 
-        raiseSection.appendChild(presetsRow);
+        raiseSection.appendChild(presetsGroup);
       }
 
-      // Custom raise input
-      const customRow = document.createElement('div');
-      customRow.className = 'raise-custom';
+      // Slider group: $min [slider] $max
+      const sliderGroup = document.createElement('div');
+      sliderGroup.className = 'raise-slider-row';
 
-      const input = document.createElement('input');
-      input.type = 'number';
-      input.setAttribute('aria-label', 'Custom raise amount');
-      if (typeof rangeAction.min === 'number') input.min = String(rangeAction.min);
-      if (typeof rangeAction.max === 'number') input.max = String(rangeAction.max);
-      input.step = '1';
-      input.placeholder = `${rangeAction.min ?? ''}-${rangeAction.max ?? ''}`;
-      input.id = 'customRaiseInput';
+      const minLabel = document.createElement('span');
+      minLabel.className = 'raise-bound raise-min';
+      minLabel.textContent = `$${min}`;
 
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.className = 'raise-slider';
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.value = String(min);
+      slider.step = '1';
+      slider.id = 'raiseSlider';
+      slider.setAttribute('aria-label', 'Raise amount slider');
+
+      const maxLabel = document.createElement('span');
+      maxLabel.className = 'raise-bound raise-max';
+      maxLabel.textContent = `$${max}`;
+
+      sliderGroup.appendChild(minLabel);
+      sliderGroup.appendChild(slider);
+      sliderGroup.appendChild(maxLabel);
+      raiseSection.appendChild(sliderGroup);
+
+      // Amount display
+      const amountDisplay = document.createElement('span');
+      amountDisplay.className = 'raise-amount-display';
+      amountDisplay.textContent = `$${min}`;
+      raiseSection.appendChild(amountDisplay);
+
+      // Raise submit button
       const raiseBtn = document.createElement('button');
       raiseBtn.textContent = 'Raise';
-      raiseBtn.className = 'raise-btn';
-      raiseBtn.disabled = true;
-      raiseBtn.setAttribute('aria-label', 'Submit custom raise');
+      raiseBtn.className = 'raise-btn raise-submit';
+      raiseBtn.setAttribute('aria-label', 'Submit raise');
+      raiseSection.appendChild(raiseBtn);
 
-      const validate = () => {
-        const v = parseInt(input.value, 10);
-        const hasV = !Number.isNaN(v);
-        const geMin = rangeAction.min == null || (hasV && v >= rangeAction.min);
-        const leMax = rangeAction.max == null || (hasV && v <= rangeAction.max);
-        raiseBtn.disabled = !(hasV && geMin && leMax);
+      // Update display on slider change
+      const updateDisplay = (value) => {
+        amountDisplay.textContent = `$${value}`;
+        const percent = ((value - min) / (max - min)) * 100;
+        slider.style.setProperty('--fill-percent', `${percent}%`);
       };
 
-      input.addEventListener('input', validate);
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !raiseBtn.disabled) {
-          raiseBtn.click();
-        }
+      slider.addEventListener('input', () => {
+        updateDisplay(parseInt(slider.value, 10));
       });
 
+      // Preset buttons update slider
+      if (presets.length > 0) {
+        const presetsGroup = raiseSection.querySelector('.raise-presets');
+        presetsGroup.addEventListener('click', (e) => {
+          const btn = e.target.closest('.raise-preset');
+          if (!btn) return;
+          const amount = parseInt(btn.dataset.amount, 10);
+          if (!Number.isNaN(amount)) {
+            slider.value = String(Math.min(Math.max(amount, min), max));
+            updateDisplay(parseInt(slider.value, 10));
+          }
+        });
+      }
+
+      // Submit raise action
       raiseBtn.onclick = () => {
-        const v = parseInt(input.value, 10);
+        const v = parseInt(slider.value, 10);
         if (!Number.isNaN(v)) {
           this.sendAction({ type: 'raise_to', amount: v });
         }
       };
 
-      customRow.appendChild(input);
-      customRow.appendChild(raiseBtn);
-      raiseSection.appendChild(customRow);
+      // Keyboard: Enter to submit
+      slider.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          raiseBtn.click();
+        }
+      });
 
       this.actionsEl.appendChild(raiseSection);
+
+      // Initialize slider fill
+      updateDisplay(min);
     }
   }
 

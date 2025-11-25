@@ -925,7 +925,7 @@ body.drawer-open main {
 |------|--------|------|------|
 | ✅ 修复牌面显示格式 | P0 | `engine.py` | 完成 |
 | ✅ 玩家卡片紧凑化 | P1 | `style.css` | 完成 |
-| ✅ 操作栏精简（预设按钮精简） | P1 | `actions.js`, `style.css` | 完成 |
+| ✅ 操作栏精简（Slider + 快捷按钮方案 B） | P1 | `actions.js`, `style.css` | 完成 |
 | 🟡 牌桌 aspect-ratio + 座位百分比 | P2 | `style.css` | 待办 |
 | 🟡 抽屉不遮挡主内容 | P2 | `style.css` | 待办 |
 | 🟢 Game Log 折叠 | P3 | `index.html`, `style.css` | 待办 |
