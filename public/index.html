@@ -7,21 +7,23 @@
     <link rel="stylesheet" href="/public/style.css?v=3" />
   </head>
   <body>
+    <div id="srAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     <main>
       <header>
         <h1>Poker Coach Alpha</h1>
         <div class="session-info">
           <span id="handCount">Hand: -</span>
           <span id="sessionStatus">Not Started</span>
+          <span id="connectionStatus">Disconnected</span>
         </div>
       </header>
       
       <div class="controls">
-        <button id="joinBtn">Join Table</button>
-        <button id="startBtn">Start Session</button>
-        <button id="nextHandBtn" style="display: none;">Continue Next Hand</button>
-        <button id="restartBtn" style="display: none;">Restart Session</button>
-        <button id="reconnectBtn" style="display: none;">Reconnect</button>
+        <button id="joinBtn" aria-label="Join table">Join Table</button>
+        <button id="startBtn" aria-label="Start session">Start Session</button>
+        <button id="nextHandBtn" style="display: none;" aria-label="Continue next hand">Continue Next Hand</button>
+        <button id="restartBtn" style="display: none;" aria-label="Restart session">Restart Session</button>
+        <button id="reconnectBtn" style="display: none;" aria-label="Reconnect to server">Reconnect</button>
       </div>
       
       <div class="poker-table">
@@ -137,6 +139,6 @@
         </div>
       </div>
     </main>
-    <script src="/public/app.js?v=4"></script>
+    <script type="module" src="/public/app.js?v=4"></script>
   </body>
 </html>

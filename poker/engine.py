@@ -465,13 +465,28 @@ class TableEngine:
         return ["preflop", "flop", "turn", "river"][min(idx, 3)]
 
     def _positions_map(self) -> Dict[str, str]:
+        """Map active seats to position labels (BTN/SB/BB/UTG/MP/CO).
+
+        Only seats with positive stacks at the start of the hand are assigned a
+        position. Busted / empty seats are omitted so the client does not show
+        SB/BB on players who are out of the game.
+        """
         labels_6max = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
         pos: Dict[str, str] = {}
-        # Assign positions clockwise starting from button_seat
-        for offset in range(self.cfg.seats):
-            seat = ((self.button_seat - 1 + offset) % self.cfg.seats) + 1
+
+        # Active seats are tracked by seat_stacks (session‑level), 0‑based.
+        active_indices = self._active_seats()
+        if not active_indices:
+            return pos
+
+        # Rotate active seats so that button_seat is first (BTN), then walk
+        # clockwise across *active* seats only.
+        ordered_indices = self._rotate_to_button(active_indices, self.button_seat)
+        for offset, idx0 in enumerate(ordered_indices):
             label = labels_6max[offset] if offset < len(labels_6max) else f"P{offset}"
-            pos[str(seat)] = label
+            seat_num = idx0 + 1  # convert 0‑based index back to 1‑based seat
+            pos[str(seat_num)] = label
+
         return pos
 
     def start_next_hand(self) -> Tuple[bool, str]:
