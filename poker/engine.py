@@ -23,7 +23,22 @@ from .analysis.stats import (
 
 
 def _card_to_str(card) -> str:
-    s = str(card)
+    """Convert card object to short code like 'Qs'.
+
+    Handles verbose pokerkit format like 'QUEEN OF SPADES (Qs)'
+    by extracting the short code from parentheses.
+    """
+    s = str(card).strip()
+    # Check for verbose format: "QUEEN OF SPADES (Qs)"
+    if "(" in s and ")" in s:
+        try:
+            start = s.rfind("(") + 1
+            end = s.rfind(")")
+            inner = s[start:end].strip()
+            if inner:
+                return inner
+        except Exception:
+            pass
     return s
 
 
@@ -385,7 +400,7 @@ class TableEngine:
             if self.hand_hole_cards is not None:
                 for i, hc in enumerate(hole_cards):
                     if hc:
-                        self.hand_hole_cards[i] = [str(c) for c in hc]
+                        self.hand_hole_cards[i] = [_card_to_str(c) for c in hc]
         except Exception:
             pass
 
@@ -395,11 +410,11 @@ class TableEngine:
                 # Active seat in this hand
                 is_human = seat == self.cfg.human_seat
                 if is_human:
-                    hole = [str(c) for c in (hole_cards[state_idx] or [])]
+                    hole = [_card_to_str(c) for c in (hole_cards[state_idx] or [])]
                 else:
                     hole = []
                     for c, up in zip(hole_cards[state_idx] or [], hole_statuses[state_idx] or []):
-                        hole.append(str(c) if up else "??")
+                        hole.append(_card_to_str(c) if up else "??")
                 players.append(
                     {
                         "seat": seat,
@@ -641,11 +656,12 @@ class TableEngine:
                         seat_num = self._state_index_to_seat(i)
                         # Prefer live state's hole cards; fallback to cached dealt cards for mucked players
                         live_holes = [
-                            str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
+                            _card_to_str(c) for c in getattr(self.state, "hole_cards", [])[i] or []
                         ]
                         if not live_holes:
                             try:
-                                live_holes = list((self.hand_hole_cards or {}).get(i, []))
+                                cached = (self.hand_hole_cards or {}).get(i, [])
+                                live_holes = [_card_to_str(c) for c in cached]
                             except Exception:
                                 live_holes = []
                         sd_players.append(
@@ -805,7 +821,7 @@ class TableEngine:
         # Helper to stringify 5 cards
         def to_strs(cards) -> List[str]:
             try:
-                return [str(c) for c in cards]
+                return [_card_to_str(c) for c in cards]
             except Exception:
                 return []
 

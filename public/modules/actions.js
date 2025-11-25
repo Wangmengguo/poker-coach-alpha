@@ -102,6 +102,57 @@ export class ActionHandler {
     }
   }
 
+  /**
+   * Filter raise presets to show only key amounts (2x, 3x, Pot, All-in).
+   * Returns at most 3 preset buttons to avoid clutter.
+   */
+  _filterRaisePresets(legal, rangeAction) {
+    if (!rangeAction) return [];
+
+    const min = rangeAction.min ?? 0;
+    const max = rangeAction.max ?? Infinity;
+    const presets = [];
+
+    // Collect all raise_to with specific amounts
+    const allRaises = legal.filter(
+      (a) => a.type === 'raise_to' && typeof a.amount === 'number'
+    );
+
+    if (allRaises.length === 0) return [];
+
+    // Sort by amount
+    allRaises.sort((a, b) => a.amount - b.amount);
+
+    // Find key amounts: smallest (≈2x), middle (≈pot), largest (all-in)
+    const smallest = allRaises[0];
+    const largest = allRaises[allRaises.length - 1];
+
+    // Always include min raise (2x-ish)
+    if (smallest) {
+      presets.push({ ...smallest, label: `$${smallest.amount}` });
+    }
+
+    // Find a middle option (roughly 3x or pot-sized)
+    if (allRaises.length > 2) {
+      const midIdx = Math.floor(allRaises.length / 2);
+      const mid = allRaises[midIdx];
+      if (mid && mid.amount !== smallest?.amount && mid.amount !== largest?.amount) {
+        presets.push({ ...mid, label: `$${mid.amount}` });
+      }
+    }
+
+    // Always include all-in if different from others
+    if (largest && largest.amount !== smallest?.amount) {
+      const isAllIn = largest.amount === max;
+      presets.push({
+        ...largest,
+        label: isAllIn ? 'All-in' : `$${largest.amount}`,
+      });
+    }
+
+    return presets;
+  }
+
   renderActions(legal) {
     if (!this.actionsEl) return;
     this.gameState.setLegalActions(legal);
@@ -116,13 +167,65 @@ export class ActionHandler {
       }
     }
 
-    if (rangeAction) {
-      const wrap = document.createElement('div');
-      wrap.className = 'custom-raise';
+    // === Primary Actions Row ===
+    const primaryRow = document.createElement('div');
+    primaryRow.className = 'actions-primary';
 
-      const label = document.createElement('label');
-      label.textContent = 'Custom raise:';
-      label.style.marginRight = '8px';
+    // Fold button
+    const foldAction = legal.find((a) => a.type === 'fold');
+    if (foldAction) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Fold';
+      btn.className = 'fold-btn';
+      btn.setAttribute('aria-label', 'Fold hand');
+      btn.onclick = () => this.sendAction(foldAction);
+      primaryRow.appendChild(btn);
+    }
+
+    // Call/Check button
+    const callAction = legal.find((a) => a.type === 'call' || a.type === 'check');
+    if (callAction) {
+      const btn = document.createElement('button');
+      if (callAction.type === 'call') {
+        btn.textContent = `Call $${callAction.amount}`;
+        btn.setAttribute('aria-label', `Call ${callAction.amount} dollars`);
+      } else {
+        btn.textContent = 'Check';
+        btn.setAttribute('aria-label', 'Check');
+      }
+      btn.className = 'call-btn';
+      btn.onclick = () => this.sendAction(callAction);
+      primaryRow.appendChild(btn);
+    }
+
+    this.actionsEl.appendChild(primaryRow);
+
+    // === Raise Section ===
+    if (rangeAction) {
+      const raiseSection = document.createElement('div');
+      raiseSection.className = 'actions-raise';
+
+      // Filtered preset buttons (max 3)
+      const presets = this._filterRaisePresets(legal, rangeAction);
+      if (presets.length > 0) {
+        const presetsRow = document.createElement('div');
+        presetsRow.className = 'raise-presets';
+
+        for (const preset of presets) {
+          const btn = document.createElement('button');
+          btn.textContent = preset.label;
+          btn.className = 'raise-btn raise-preset';
+          btn.setAttribute('aria-label', `Raise to ${preset.amount} dollars`);
+          btn.onclick = () => this.sendAction({ type: 'raise_to', amount: preset.amount });
+          presetsRow.appendChild(btn);
+        }
+
+        raiseSection.appendChild(presetsRow);
+      }
+
+      // Custom raise input
+      const customRow = document.createElement('div');
+      customRow.className = 'raise-custom';
 
       const input = document.createElement('input');
       input.type = 'number';
@@ -130,12 +233,8 @@ export class ActionHandler {
       if (typeof rangeAction.min === 'number') input.min = String(rangeAction.min);
       if (typeof rangeAction.max === 'number') input.max = String(rangeAction.max);
       input.step = '1';
-      input.placeholder = `${rangeAction.min ?? ''}${
-        rangeAction.min != null || rangeAction.max != null ? '-' : ''
-      }${rangeAction.max ?? ''}`;
+      input.placeholder = `${rangeAction.min ?? ''}-${rangeAction.max ?? ''}`;
       input.id = 'customRaiseInput';
-      input.style.width = '120px';
-      input.style.marginRight = '8px';
 
       const raiseBtn = document.createElement('button');
       raiseBtn.textContent = 'Raise';
@@ -165,45 +264,11 @@ export class ActionHandler {
         }
       };
 
-      wrap.appendChild(label);
-      wrap.appendChild(input);
-      wrap.appendChild(raiseBtn);
-      this.actionsEl.appendChild(wrap);
-    }
+      customRow.appendChild(input);
+      customRow.appendChild(raiseBtn);
+      raiseSection.appendChild(customRow);
 
-    for (const a of legal) {
-      if (
-        a.type === 'raise_to' &&
-        typeof a.amount !== 'number' &&
-        (typeof a.min === 'number' || typeof a.max === 'number')
-      ) {
-        continue;
-      }
-
-      const btn = document.createElement('button');
-
-      if (a.type === 'call') {
-        btn.textContent = `Call $${a.amount}`;
-        btn.className = 'call-btn';
-        btn.setAttribute('aria-label', `Call ${a.amount} dollars`);
-      } else if (a.type === 'check') {
-        btn.textContent = 'Check';
-        btn.className = 'call-btn';
-        btn.setAttribute('aria-label', 'Check');
-      } else if (a.type === 'fold') {
-        btn.textContent = 'Fold';
-        btn.className = 'fold-btn';
-        btn.setAttribute('aria-label', 'Fold hand');
-      } else if (a.type === 'raise_to' && typeof a.amount === 'number') {
-        btn.textContent = `Raise to $${a.amount}`;
-        btn.className = 'raise-btn';
-        btn.setAttribute('aria-label', `Raise to ${a.amount} dollars`);
-      } else {
-        btn.textContent = a.type;
-      }
-
-      btn.onclick = () => this.sendAction(a);
-      this.actionsEl.appendChild(btn);
+      this.actionsEl.appendChild(raiseSection);
     }
   }
 

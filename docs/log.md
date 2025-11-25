@@ -26,3 +26,19 @@ Date: 2025-11-25
   - Enriched action and control buttons with `aria-label` attributes, including custom raise input/button, without changing interaction behavior.
 - Table positions fix:
   - Updated `PokerEngine._positions_map` to assign BTN/SB/BB/UTG/MP/CO only to active seats (positive stacks) by rotating over `_active_seats()` from `button_seat`, so busted players no longer show SB/BB in the client while still appearing as $0 seats.
+
+- Frontend beautification plan / MVP alignment:
+  - Updated `docs/FRONTEND_BEAUTIFICATION_PLAN.md` Phase 1.5 section to explicitly define MVP scope (P0 card formatting fix + P1 layout/action simplification) and mark P2+ tasks as post‑MVP progressive enhancements.
+  - Documented a simplified MVP action bar strategy (retain custom raise + 2–3 core presets, defer slider UX to Phase 2+) and added a Frontend DoD note tying "done" to Phase 1 + P0 + P1 completion.
+
+- Frontend Phase 1 visual baseline completed:
+  - Added comprehensive CSS variable system with professional poker palette (felt greens, gold accents, status colors).
+  - Implemented distinctive typography: Playfair Display (headers), DM Sans (body), JetBrains Mono (numbers/chips).
+  - Added card suit color differentiation (red for hearts/diamonds, black for spades/clubs) via `data-suit` attribute in `renderer.js`.
+  - Implemented focus states (`:focus-visible`), high contrast mode support, and `prefers-reduced-motion` accessibility.
+  - Optimized responsive layout for tablet/mobile with touch target sizes ≥48px.
+
+- Frontend Phase 1.5 (P0 + P1) completed:
+  - **P0 - Card display format fix**: Updated `_card_to_str()` in `poker/engine.py` to extract short codes (e.g., "Ac" from "ACE OF CLUBS (Ac)"). Fixed all 6 locations using `str(c)` for card conversion: `build_table_snapshot` (human/bot holes, cache), showdown player holes, showdown cached holes, and winner best5.
+  - **P1 - Player card compactification**: Reduced `.seat` width to 78px, `.player-info` max-width to 82px, shrunk font sizes for name/stack/cards.
+  - **P1 - Action bar simplification**: Refactored `actions.js` to show primary actions (Fold/Call) separately from raise section. Added `_filterRaisePresets()` to limit raise buttons to max 3 (min, mid, all-in). Styled with new `.actions-primary`, `.actions-raise`, `.raise-presets`, `.raise-custom` CSS classes.

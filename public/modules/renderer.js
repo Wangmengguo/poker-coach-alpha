@@ -127,6 +127,16 @@ export class Renderer {
     connectionStatusEl.style.color = color;
   }
 
+  /**
+   * Extract suit from card string (e.g., "Ah" -> "h", "Kd" -> "d")
+   */
+  getSuit(card) {
+    if (!card || card.length < 2) return null;
+    const suit = card.charAt(card.length - 1).toLowerCase();
+    if (['h', 'd', 's', 'c'].includes(suit)) return suit;
+    return null;
+  }
+
   renderPotAndBoard(pot, board, street) {
     const { potAmountEl, boardEl, streetInfoEl } = this.cached;
     setText(potAmountEl, `$${pot}`);
@@ -137,6 +147,10 @@ export class Renderer {
         const cardEl = document.createElement('div');
         cardEl.className = 'card';
         cardEl.textContent = card;
+        const suit = this.getSuit(card);
+        if (suit) {
+          cardEl.dataset.suit = suit;
+        }
         boardEl.appendChild(cardEl);
       });
     }
@@ -171,6 +185,12 @@ export class Renderer {
             const cardEl = document.createElement('div');
             cardEl.className = card === '??' ? 'card hidden' : 'card';
             cardEl.textContent = card === '??' ? '?' : card;
+            if (card !== '??') {
+              const suit = this.getSuit(card);
+              if (suit) {
+                cardEl.dataset.suit = suit;
+              }
+            }
             cardsEl.appendChild(cardEl);
           });
         }
@@ -421,6 +441,10 @@ export class Renderer {
         const cardEl = document.createElement('div');
         cardEl.className = 'card';
         cardEl.textContent = card;
+        const suit = this.getSuit(card);
+        if (suit) {
+          cardEl.dataset.suit = suit;
+        }
         cardsEl.appendChild(cardEl);
       });
       if (winnerSeats.has(p.seat)) {
