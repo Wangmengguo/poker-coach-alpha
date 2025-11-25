@@ -42,3 +42,20 @@ Date: 2025-11-25
   - **P0 - Card display format fix**: Updated `_card_to_str()` in `poker/engine.py` to extract short codes (e.g., "Ac" from "ACE OF CLUBS (Ac)"). Fixed all 6 locations using `str(c)` for card conversion: `build_table_snapshot` (human/bot holes, cache), showdown player holes, showdown cached holes, and winner best5.
   - **P1 - Player card compactification**: Reduced `.seat` width to 78px, `.player-info` max-width to 82px, shrunk font sizes for name/stack/cards.
   - **P1 - Action bar simplification**: Refactored `actions.js` to show primary actions (Fold/Call) separately from raise section. Added `_filterRaisePresets()` to limit raise buttons to max 3 (min, mid, all-in). Styled with new `.actions-primary`, `.actions-raise`, `.raise-presets`, `.raise-custom` CSS classes.
+
+- Frontend Phase 1.5 (P1 continued) - Action bar Plan B (Slider + Quick Buttons):
+  - Rewrote `_buildRaisePresets()` in `actions.js` to generate semantic presets (2x, 3x, Pot, All-in).
+  - Implemented slider-based raise UI: `[2x][3x][Pot][All-in] | $min[slider]$max | $amt [Raise]`.
+  - Preset buttons update slider value; slider shows real-time amount with fill percentage via CSS variable `--fill-percent`.
+  - Optimized layout to single-row flex for compact display; responsive styles for tablet/mobile.
+
+- Frontend Phase 1.5 (P2 + P3) completed:
+  - **P2 - Poker table aspect-ratio**: Changed from fixed `width/height` to `aspect-ratio: 16/10` with `max-width: 640px`. Seat positions now use percentage values (e.g., `right: 5%`) for responsive scaling.
+  - **P2 - Drawer doesn't overlap main content**: Added `body.drawer-open main { margin-right: 290px }` to push main content when drawer is open. `renderer.js` toggles `drawer-open` class on body in `openDrawer()`/`closeDrawer()`.
+  - **P3 - Game Log collapsible**: Converted log section to native `<details>` element with styled `<summary>`. Arrow indicator rotates on open/close via CSS transform.
+
+- Coach drawer toggle fix:
+  - Added floating `#drawerOpenBtn` button (📊 Coach) visible when drawer is closed.
+  - Button positioned at top-right (desktop) or bottom-right (mobile).
+  - Hides automatically when `body.drawer-open` via CSS `opacity: 0; pointer-events: none`.
+  - Separated close (×) and open button handlers in `bindDrawerToggle()` to fix reopening bug.

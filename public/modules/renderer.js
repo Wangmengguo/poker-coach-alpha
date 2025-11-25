@@ -24,6 +24,7 @@ export class Renderer {
       analysisEl: document.getElementById('analysis'),
       analysisDrawerEl: document.getElementById('analysisDrawer'),
       drawerToggleBtn: document.getElementById('drawerToggleBtn'),
+      drawerOpenBtn: document.getElementById('drawerOpenBtn'),
       drawerHeroPosEl: document.getElementById('drawerHeroPos'),
       drawerCoreMathEl: document.getElementById('drawerCoreMath'),
       drawerHandTextureEl: document.getElementById('drawerHandTexture'),
@@ -66,17 +67,23 @@ export class Renderer {
   }
 
   bindDrawerToggle() {
-    const { drawerToggleBtn } = this.cached;
-    if (!drawerToggleBtn) return;
-    drawerToggleBtn.onclick = () => {
-      if (this.drawerOpen) {
+    const { drawerToggleBtn, drawerOpenBtn } = this.cached;
+
+    // Close button inside drawer header
+    if (drawerToggleBtn) {
+      drawerToggleBtn.onclick = () => {
         this.closeDrawer();
         this.drawerUserPinnedClosed = true;
-      } else {
+      };
+    }
+
+    // Floating open button (visible when drawer is closed)
+    if (drawerOpenBtn) {
+      drawerOpenBtn.onclick = () => {
         this.drawerUserPinnedClosed = false;
         this.openDrawer(false);
-      }
-    };
+      };
+    }
   }
 
   updateSessionInfo(handId, sessionActive) {

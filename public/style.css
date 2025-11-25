@@ -670,6 +670,48 @@ button:disabled {
    5. ANALYSIS DRAWER
    ===================================================== */
 
+/* Floating open button (visible when drawer is closed) */
+.drawer-open-btn {
+  position: fixed;
+  top: 80px;
+  right: 16px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, var(--gray-800) 0%, var(--gray-900) 100%);
+  border: 1px solid var(--gold-soft);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+}
+
+.drawer-open-btn:hover {
+  background: linear-gradient(135deg, var(--gray-700) 0%, var(--gray-800) 100%);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  transform: translateY(-1px);
+}
+
+.drawer-open-btn .drawer-open-icon {
+  font-size: 1rem;
+}
+
+.drawer-open-btn .drawer-open-label {
+  font-family: var(--font-body);
+}
+
+/* Hide open button when drawer is open */
+body.drawer-open .drawer-open-btn {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(20px);
+}
+
 .analysis-drawer {
   position: fixed;
   top: 64px;
@@ -939,6 +981,15 @@ a:focus-visible,
 
   .raise-slider {
     width: 80px;
+  }
+
+  /* Floating open button - bottom position on mobile */
+  .drawer-open-btn {
+    top: auto;
+    bottom: 16px;
+    right: 16px;
+    padding: 8px 12px;
+    font-size: 0.8rem;
   }
 
   /* Analysis drawer - bottom sheet on mobile */

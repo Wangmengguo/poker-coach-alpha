@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Poker Coach Alpha</title>
-    <link rel="stylesheet" href="/public/style.css?v=8" />
+    <link rel="stylesheet" href="/public/style.css?v=9" />
   </head>
   <body>
     <div id="srAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -105,6 +105,12 @@
         <pre id="log"></pre>
       </details>
 
+      <!-- Floating Coach Toggle Button (visible when drawer is closed) -->
+      <button id="drawerOpenBtn" class="drawer-open-btn" aria-label="Open coach panel">
+        <span class="drawer-open-icon">📊</span>
+        <span class="drawer-open-label">Coach</span>
+      </button>
+
       <!-- Analysis Drawer (MVP) -->
       <div id="analysisDrawer" class="analysis-drawer collapsed">
         <div class="drawer-header">
@@ -112,7 +118,7 @@
             <h3>Coach</h3>
             <span id="drawerHeroPos" class="drawer-hero-pos"></span>
           </div>
-          <button id="drawerToggleBtn" class="drawer-toggle" aria-label="Toggle analysis drawer">×</button>
+          <button id="drawerToggleBtn" class="drawer-toggle" aria-label="Close coach panel">×</button>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
@@ -139,6 +145,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="/public/app.js?v=8"></script>
+    <script type="module" src="/public/app.js?v=9"></script>
   </body>
 </html>
