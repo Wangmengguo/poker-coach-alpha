@@ -16,6 +16,7 @@ from poker.analysis.models import DecisionContext
 from poker.analysis.equity import compute_hand_strength, compute_equity_vs_range
 from poker.analysis.ranges import build_default_preflop_range
 from poker.analysis.preflop_tables import PREFLOP_EQUITIES_BY_PLAYERS
+from pokerkit import Card
 
 
 @dataclass
@@ -341,3 +342,47 @@ def test_preflop_lookup_aa_and_unknown_combo():
     assert res_unknown.model in ("preflop_unavailable", "preflop_lookup")
     if res_unknown.model == "preflop_unavailable":
         assert res_unknown.hand_strength_pct is None
+
+
+@dataclass
+class FakePostflopState:
+    street_index: int = 3
+    hole_cards: Sequence[Sequence] = field(default_factory=list)
+    board_cards: Sequence[Sequence] = field(default_factory=list)
+    statuses: Sequence[bool] = field(default_factory=list)
+
+
+def test_hand_strength_locked_nuts_vs_random_near_one():
+    # Hero holds the nut royal flush on the board; cannot lose vs random hand.
+    hero = list(Card.parse("As Ks"))
+    villain = list(Card.parse("2c 3d"))
+    board = list(Card.parse("Qs Js Ts 2h 3c"))
+    state = FakePostflopState(
+        street_index=3,  # river
+        hole_cards=[hero, villain],
+        board_cards=[board],
+        statuses=[True, True],
+    )
+    res = compute_hand_strength(state, hero_idx=0, sample_count=200)
+    assert res.hand_strength_pct is not None
+    # Allow a little slack but require clearly "near 100%"
+    assert res.hand_strength_pct >= 95.0
+
+
+def test_hand_strength_clearly_behind_river_spot_is_small():
+    # Hero has a very weak made hand on a coordinated board multiway;
+    # strength should be clearly low vs random opponents.
+    hero = list(Card.parse("2c 7d"))
+    opp1 = list(Card.parse("Ah Kd"))
+    opp2 = list(Card.parse("Qh Jd"))
+    board = list(Card.parse("As Ks Qs Js 2d"))
+    state = FakePostflopState(
+        street_index=3,
+        hole_cards=[hero, opp1, opp2],
+        board_cards=[board],
+        statuses=[True, True, True],
+    )
+    res = compute_hand_strength(state, hero_idx=0, sample_count=400)
+    assert res.hand_strength_pct is not None
+    # Do not require ~0, but it should be clearly small.
+    assert res.hand_strength_pct <= 25.0

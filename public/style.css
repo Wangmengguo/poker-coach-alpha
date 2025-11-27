@@ -137,6 +137,24 @@ h1 {
   flex-wrap: wrap;
 }
 
+/* Audio Toggle Button */
+.audio-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 1.2rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--gray-700);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.audio-toggle:hover {
+  background: var(--gray-700);
+  border-color: var(--gold-soft);
+}
+
 /* Poker Table */
 .poker-table {
   position: relative;
@@ -839,7 +857,57 @@ body.drawer-open .drawer-open-btn {
 }
 
 /* =====================================================
-   6. STATES & MODIFIERS
+   6. ACTION NOTIFICATIONS
+   ===================================================== */
+
+/* Action notification toast near player seat */
+.action-notification {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: var(--gold-bright);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  animation: notificationSlideIn 0.3s ease-out;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-accent);
+}
+
+.action-notification.fade-out {
+  animation: notificationFadeOut 0.3s ease-out forwards;
+}
+
+@keyframes notificationSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes notificationFadeOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+}
+
+/* =====================================================
+   7. STATES & MODIFIERS
    ===================================================== */
 
 /* Active player (to act) */
@@ -867,7 +935,7 @@ body.drawer-open .drawer-open-btn {
 }
 
 /* =====================================================
-   7. ACCESSIBILITY
+   8. ACCESSIBILITY
    ===================================================== */
 
 /* Focus states */
@@ -916,7 +984,7 @@ a:focus-visible,
 }
 
 /* =====================================================
-   8. RESPONSIVE DESIGN
+   9. RESPONSIVE DESIGN
    ===================================================== */
 
 @media (max-width: 768px) {

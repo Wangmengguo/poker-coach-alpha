@@ -78,3 +78,24 @@ def test_build_stats_payload_percentages_consistent():
     assert payload["pfr_opportunities"] == 10
     assert payload["pfr_pct"] == 20.0
 
+    # Hands/sample size is exposed and used for style mapping
+    assert payload["hands"] == 10
+    # With <20 hands, style should be Unknown
+    assert payload["style"] == "Unknown"
+
+
+def test_style_mapping_loose_aggressive_with_enough_hands():
+    stats: HumanStats = new_session_stats()
+    # 40 hands with opportunity; 20 VPIP (50%) → Loose
+    stats.vpip_opportunities = 40
+    stats.vpip_voluntary = 20
+    # PFR not relevant for style, but keep consistent
+    stats.pfr_raises = 10
+    # AFq: 24 aggressive actions out of 40 total → 60% → Aggressive
+    stats.afq_agg = 24
+    stats.afq_total = 40
+
+    payload = build_stats_payload(stats)
+
+    assert payload["hands"] == 40
+    assert payload["style"] == "Loose-Aggressive"

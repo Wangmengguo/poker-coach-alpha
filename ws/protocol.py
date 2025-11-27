@@ -142,9 +142,20 @@ class AnalysisUpdate(BaseModel):
     hand_strength: Optional[HandStrengthPayload] = None
 
 
+class ActionNotification(BaseModel):
+    """Notification when any player (human or bot) takes an action."""
+
+    type: Literal["action_taken"] = "action_taken"
+    seat: int
+    player_id: str
+    action_type: str  # "fold", "check", "call", "raise_to"
+    amount: Optional[int] = None  # For call/raise
+    is_bot: bool = False
+
+
 # ========== Message Union Type ==========
 
-ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack, AnalysisUpdate]
+ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack, AnalysisUpdate, ActionNotification]
 ClientMessage = Union[ClientAction, Resume]
 
 

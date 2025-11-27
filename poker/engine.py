@@ -794,6 +794,16 @@ class TableEngine:
                         # Defensive fallback: no-op if we cannot find an action
                         break
                     self.apply_action(action)
+                    # Send action notification for bot action
+                    action_notification = {
+                        "type": "action_taken",
+                        "seat": seat,
+                        "player_id": self.player_ids[seat - 1],
+                        "action_type": action.get("type", "unknown"),
+                        "amount": action.get("amount"),
+                        "is_bot": True,
+                    }
+                    messages.append(action_notification)
                 else:
                     # Non-bot seat but not human - skip or error
                     break

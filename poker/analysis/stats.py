@@ -104,6 +104,28 @@ def build_stats_payload(stats: HumanStats) -> Dict[str, Any]:
     afq_total = int(stats.afq_total)
     afq_pct = float(afq_agg * 100.0 / afq_total) if afq_total > 0 else 0.0
 
+    hands = vpip_den
+
+    # TL×AP style mapping with small-sample guard.
+    if hands < 20:
+        style = "Unknown"
+    else:
+        loose = vpip_pct >= 28.0
+        tight = vpip_pct <= 18.0
+        aggressive = afq_pct >= 45.0
+        passive = afq_pct <= 30.0
+
+        if tight and aggressive:
+            style = "Tight-Aggressive"
+        elif tight and passive:
+            style = "Tight-Passive"
+        elif loose and aggressive:
+            style = "Loose-Aggressive"
+        elif loose and passive:
+            style = "Loose-Passive"
+        else:
+            style = "Unknown"
+
     return {
         "vpip_pct": round(vpip_pct, 1),
         "vpip_voluntary": vpip_num,
@@ -114,5 +136,7 @@ def build_stats_payload(stats: HumanStats) -> Dict[str, Any]:
         "afq_pct": round(afq_pct, 1),
         "afq_agg": afq_agg,
         "afq_total": afq_total,
+        "hands": int(hands),
+        "style": style,
     }
 

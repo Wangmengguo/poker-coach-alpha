@@ -3,6 +3,7 @@ import { WebSocketManager } from './modules/websocket.js';
 import { Renderer } from './modules/renderer.js';
 import { ActionHandler } from './modules/actions.js';
 import { AnalysisDrawer } from './modules/analysis.js';
+import { audioManager } from './modules/audio.js';
 
 const gameState = new GameState();
 const renderer = new Renderer();
@@ -12,6 +13,19 @@ const analysisDrawer = new AnalysisDrawer(renderer, gameState);
 
 renderer.bindDrawerToggle();
 actionHandler.bind();
+
+// Initialize audio on first user interaction
+document.addEventListener('click', () => audioManager.init(), { once: true });
+
+// Audio toggle button
+const audioToggleBtn = document.getElementById('audioToggleBtn');
+if (audioToggleBtn) {
+  audioToggleBtn.onclick = () => {
+    const enabled = audioManager.toggle();
+    audioToggleBtn.textContent = enabled ? '🔊' : '🔇';
+    audioToggleBtn.setAttribute('aria-label', enabled ? 'Mute sound' : 'Unmute sound');
+  };
+}
 
 wsManager.on('open', () => {
   gameState.setConnectionStatus('connected', 0);
@@ -75,6 +89,7 @@ wsManager.on('message', (msg) => {
       actionHandler.renderActions(legal);
       renderer.log(`Your turn - ${legal.length} options`);
       renderer.announce(`Your turn, ${legal.length} options`);
+      audioManager.play('turn'); // Play "your turn" sound
       try {
         const analysis = msg.analysis || {};
         analysisDrawer.updateAndRender(
@@ -108,6 +123,10 @@ wsManager.on('message', (msg) => {
         }`,
       );
       renderer.highlightShowdown(msg);
+      // Play win sound if there are winners
+      if (msg.winners && msg.winners.length > 0) {
+        audioManager.play('win');
+      }
       break;
     }
     case 'hand_end': {
@@ -152,6 +171,44 @@ wsManager.on('message', (msg) => {
       } catch (e) {
         // ignore
       }
+      break;
+    }
+    case 'action_taken': {
+      // Handle action notification (both human and bot actions)
+      const { seat, player_id, action_type, amount, is_bot } = msg;
+      
+      // Format action text
+      let actionText = '';
+      switch (action_type) {
+        case 'fold':
+          actionText = `${player_id} folds`;
+          break;
+        case 'check':
+          actionText = `${player_id} checks`;
+          break;
+        case 'call':
+          actionText = `${player_id} calls${amount ? ` $${amount}` : ''}`;
+          break;
+        case 'raise_to':
+          actionText = `${player_id} raises to $${amount}`;
+          break;
+        default:
+          actionText = `${player_id} ${action_type}${amount ? ` $${amount}` : ''}`;
+      }
+      
+      // Log the action
+      renderer.log(actionText);
+      
+      // Show visual notification for bot actions (human actions are obvious from their own input)
+      if (is_bot) {
+        renderer.showActionNotification(seat, actionText);
+      }
+      
+      // Play sound effect
+      audioManager.playAction(action_type);
+      
+      // Announce for screen readers
+      renderer.announce(actionText);
       break;
     }
     default:

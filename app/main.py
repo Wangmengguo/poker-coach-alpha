@@ -362,6 +362,16 @@ async def ws_table(websocket: WebSocket, table_id: str):
 
                 try:
                     engine.apply_action(action)
+                    # Send action notification for human action
+                    human_action_notification = {
+                        "type": "action_taken",
+                        "seat": client_action.seat,
+                        "player_id": engine.player_ids[client_action.seat - 1],
+                        "action_type": action.get("type", "unknown"),
+                        "amount": action.get("amount"),
+                        "is_bot": False,
+                    }
+                    await websocket.send_json(human_action_notification)
                 except Exception as e:
                     import traceback as _tb
 

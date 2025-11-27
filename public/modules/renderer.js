@@ -66,6 +66,34 @@ export class Renderer {
     announcerEl.textContent = message;
   }
 
+  /**
+   * Show a temporary action notification near a player seat
+   */
+  showActionNotification(seat, text) {
+    const cachedSeat = this.cached.seats[seat];
+    if (!cachedSeat || !cachedSeat.container) return;
+
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.className = 'action-notification';
+    notification.textContent = text;
+    notification.setAttribute('role', 'status');
+    notification.setAttribute('aria-live', 'polite');
+
+    // Position relative to seat
+    cachedSeat.container.appendChild(notification);
+
+    // Remove after animation
+    setTimeout(() => {
+      notification.classList.add('fade-out');
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.parentNode.removeChild(notification);
+        }
+      }, 300);
+    }, 2000);
+  }
+
   bindDrawerToggle() {
     const { drawerToggleBtn, drawerOpenBtn } = this.cached;
 
@@ -376,6 +404,8 @@ export class Renderer {
         const agg = Number(lastStats.afq_agg || 0);
         const tot = Number(lastStats.afq_total || 0);
         const afqPct = tot > 0 ? Math.round((agg * 100) / tot) : 0;
+         const hands = Number(lastStats.hands != null ? lastStats.hands : d);
+         const style = lastStats.style || 'Unknown';
 
         const p1 = document.createElement('p');
         p1.textContent = `VPIP: ${vpipPct}% (${n}/${d} hands)`;
@@ -383,10 +413,17 @@ export class Renderer {
         p2.textContent = `PFR: ${pfrPct}% (${r}/${rd} hands)`;
         const p3 = document.createElement('p');
         p3.textContent = `AFq: ${afqPct}% (${agg}/${tot} actions)`;
+        const p4 = document.createElement('p');
+        if (hands < 20) {
+          p4.textContent = `Style: Unknown (${hands} hands, small sample)`;
+        } else {
+          p4.textContent = `Style: ${style} (${hands} hands)`;
+        }
 
         drawerStatsEl.appendChild(p1);
         drawerStatsEl.appendChild(p2);
         drawerStatsEl.appendChild(p3);
+        drawerStatsEl.appendChild(p4);
       } else {
         const p = document.createElement('p');
         p.textContent = 'No stats yet';
@@ -401,7 +438,7 @@ export class Renderer {
     }
 
     // Debug JSON
-    if (analysisEl) {
+      if (analysisEl) {
       const debugObj = {
         pot_math: lastPotMath,
         pot_extra: lastPotExtra,
