@@ -222,6 +222,10 @@ def start_session(table_id: str):
     engine = _engines.get(table_id)
     if not engine:
         return JSONResponse(status_code=404, content={"error": "table not found"})
+    # Prevent starting a new session while one is already active; callers
+    # should use /restart if they need to force-reset mid-session.
+    if getattr(engine, "session_active", False):
+        return JSONResponse(status_code=400, content={"error": "session already active"})
     engine.start_session()
     # Advance until prompt or hand end and broadcast
     messages, _ = engine.advance(human_seat=1)

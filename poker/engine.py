@@ -456,6 +456,10 @@ class TableEngine:
         if getattr(self.state, "operations", None):
             op = self.state.operations[-1]
             last_op = op.__class__.__name__
+
+        # Derived session/hand flags for clients (helpful on reload)
+        hand_over = self.is_hand_over()
+        session_active = bool(self.session_active)
         return {
             "table_id": "default",
             "hand_id": f"h_{self.hand_index:05d}",
@@ -470,6 +474,10 @@ class TableEngine:
             "legal_actions": self.legal_actions(),
             "last_op": last_op,
             "positions": self._positions_map(),
+            "session_active": session_active,
+            # True when a session is active but the current hand is finished
+            # and the engine is waiting for REST /next to be called.
+            "awaiting_next_hand": bool(session_active and hand_over),
         }
 
     def _street_name(self) -> str:

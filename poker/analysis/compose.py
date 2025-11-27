@@ -9,9 +9,10 @@ from .core import (
     compute_pot_odds_and_equity_need,
     describe_hand,
 )
-from .equity import compute_hand_strength
+from .equity import compute_hand_strength, compute_equity_vs_range
 from .models import DecisionContext
 from .stats import HumanStats, build_stats_payload
+from .ranges import build_default_preflop_range
 
 
 def _safe_list(obj: Any) -> List:
@@ -87,6 +88,19 @@ def compose_analysis(
     outs_payload = compute_outs(hero_cards, board_cards) if hero_cards and board_cards else None
     outs_value = int(outs_payload.get("outs", 0)) if outs_payload else 0
 
+    # Stats (human-only)
+    stats_payload = build_stats_payload(session_stats) if session_stats else None
+
+    # Street & position
+    try:
+        street_idx = getattr(state, "street_index", None)
+        street = ["preflop", "flop", "turn", "river"][street_idx] if street_idx is not None else "unknown"
+    except Exception:
+        street = "unknown"
+    hero_position = positions_map.get(str(hero_seat)) if positions_map else None
+
+    players_count = _count_live_players(state)
+
     # Hand strength (optional to avoid extra Monte Carlo on prompt)
     hand_strength_pct: Optional[float] = None
     degraded = False
@@ -102,18 +116,29 @@ def compose_analysis(
             degraded = True
             reason = f"error: {exc}"
 
-    # Stats (human-only)
-    stats_payload = build_stats_payload(session_stats) if session_stats else None
-
-    # Street & position
-    try:
-        street_idx = getattr(state, "street_index", None)
-        street = ["preflop", "flop", "turn", "river"][street_idx] if street_idx is not None else "unknown"
-    except Exception:
-        street = "unknown"
-    hero_position = positions_map.get(str(hero_seat)) if positions_map else None
-
-    players_count = _count_live_players(state)
+    # Preflop equity vs default range (heads-up approximation)
+    range_equity_payload: Optional[Dict[str, Any]] = None
+    if street == "preflop" and hero_cards:
+        try:
+            # Use a conservative default villain range for a generic position.
+            # Stack depth is approximated as 100bb for now.
+            villain_range = build_default_preflop_range("MP", stack_bb=100)
+            eq_res = compute_equity_vs_range(
+                state,
+                hero_idx,
+                villain_range,
+                sample_count=200,
+                rng_seed=None,
+            )
+            range_equity_payload = {
+                "model": "vs_default_range",
+                "equity_pct": round(eq_res.win_pct + 0.5 * eq_res.tie_pct, 1),
+                "players": eq_res.players,
+                "sample_count": eq_res.sample_count,
+                "position": "MP",
+            }
+        except Exception:
+            range_equity_payload = None
 
     dc = DecisionContext(
         street=street,
@@ -155,6 +180,8 @@ def compose_analysis(
         analysis_payload["outs"] = outs_payload
     if stats_payload is not None:
         analysis_payload["stats"] = stats_payload
+    if range_equity_payload is not None:
+        analysis_payload["range_equity"] = range_equity_payload
     if hero_position:
         analysis_payload.setdefault("context", {})["hero_position"] = hero_position
     # hand_strength is intentionally sent via async update elsewhere; skip here by default

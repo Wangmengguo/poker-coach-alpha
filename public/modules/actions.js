@@ -10,23 +10,17 @@ export class ActionHandler {
     this.gameState = gameState;
     this.wsManager = wsManager;
 
-    this.joinBtn = document.getElementById('joinBtn');
     this.startBtn = document.getElementById('startBtn');
     this.reconnectBtn = document.getElementById('reconnectBtn');
     this.nextHandBtn = document.getElementById('nextHandBtn');
-    this.restartBtn = document.getElementById('restartBtn');
     this.actionsEl = document.getElementById('actions');
   }
 
   bind() {
-    if (this.joinBtn) this.joinBtn.onclick = () => this.join();
     if (this.startBtn) this.startBtn.onclick = () => this.start();
     if (this.reconnectBtn) this.reconnectBtn.onclick = () => this.wsManager.connect();
     if (this.nextHandBtn) {
       this.nextHandBtn.onclick = () => this.nextHand();
-    }
-    if (this.restartBtn) {
-      this.restartBtn.onclick = () => this.restartSession();
     }
   }
 
@@ -52,6 +46,12 @@ export class ActionHandler {
       }
       const data = await res.json();
       this.renderer.log(`Session started: ${data.hand_id}`);
+      // New session: reset per-session stats; lifetime base stays.
+      try {
+        this.gameState.resetSessionStats();
+      } catch (e) {
+        // ignore
+      }
     } catch (e) {
       this.renderer.log(`Start error: ${e}`);
     }
@@ -76,29 +76,6 @@ export class ActionHandler {
     } finally {
       this.nextHandBtn.disabled = false;
       setVisible(this.nextHandBtn, false);
-    }
-  }
-
-  async restartSession() {
-    if (!this.restartBtn) return;
-    try {
-      this.restartBtn.disabled = true;
-      const res = await fetch(`/tables/${DEFAULT_TABLE_ID}/restart`, { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        this.renderer.log(`Restart failed: ${err.error || res.statusText}`);
-      } else {
-        const data = await res.json();
-        this.renderer.log(`Session restarted: ${data.hand_id}`);
-        setVisible(this.nextHandBtn, false);
-        setVisible(this.restartBtn, false);
-        const showdownSummaryEl = document.getElementById('showdownSummary');
-        if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
-      }
-    } catch (e) {
-      this.renderer.log(`Restart error: ${e}`);
-    } finally {
-      this.restartBtn.disabled = false;
     }
   }
 
@@ -155,6 +132,12 @@ export class ActionHandler {
 
   renderActions(legal) {
     if (!this.actionsEl) return;
+    
+    // Hide Continue button when showing action buttons to prevent overlap
+    if (this.nextHandBtn) {
+      setVisible(this.nextHandBtn, false);
+    }
+    
     this.gameState.setLegalActions(legal);
     this.actionsEl.innerHTML = '';
 

@@ -106,8 +106,10 @@ def build_stats_payload(stats: HumanStats) -> Dict[str, Any]:
 
     hands = vpip_den
 
-    # TL×AP style mapping with small-sample guard.
-    if hands < 20:
+    # TL×AP style mapping.
+    # Always classify when we have at least 1 hand; callers/clients can
+    # treat small samples specially in the UI.
+    if hands <= 0:
         style = "Unknown"
     else:
         loose = vpip_pct >= 28.0
@@ -139,4 +141,3 @@ def build_stats_payload(stats: HumanStats) -> Dict[str, Any]:
         "hands": int(hands),
         "style": style,
     }
-

@@ -1,0 +1,29 @@
+# 音乐授权信息
+
+## 背景音乐
+
+**文件**: bgm-lounge.mp3
+**曲名**: Smooth Lovin
+**作者**: Kevin MacLeod (incompetech.com)
+**授权**: Creative Commons: By Attribution 4.0 License
+**链接**: https://incompetech.com/music/royalty-free/
+
+### 使用要求
+
+使用此音乐时需要署名。推荐在项目中包含以下信息：
+
+```
+Music: "Smooth Lovin" by Kevin MacLeod (https://incompetech.com)
+License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+```
+
+### 关于 Kevin MacLeod
+
+Kevin MacLeod 是一位美国作曲家，他创作了大量免版税音乐，
+并以 Creative Commons 许可证免费提供给公众使用。
+他的音乐被广泛用于电影、电视、游戏和网络视频中。
+
+---
+
+*下载日期: 2025-01*
+

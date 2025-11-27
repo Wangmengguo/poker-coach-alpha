@@ -131,6 +131,7 @@ h1 {
 /* Controls Bar */
 .controls {
   display: flex;
+  align-items: center;
   gap: 10px;
   margin-bottom: 20px;
   justify-content: center;
@@ -153,6 +154,113 @@ h1 {
 .audio-toggle:hover {
   background: var(--gray-700);
   border-color: var(--gold-soft);
+}
+
+/* BGM Toggle Button */
+.bgm-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 1.2rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--gray-700);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.bgm-toggle:hover {
+  background: var(--gray-700);
+  border-color: var(--gold-soft);
+}
+
+.bgm-toggle.playing {
+  border-color: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.3);
+}
+
+.bgm-toggle.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Speed Toggle Button */
+.speed-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 1.2rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--gray-700);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.speed-toggle:hover {
+  background: var(--gray-700);
+  border-color: var(--gold-soft);
+}
+
+.speed-toggle[data-speed="instant"] {
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 6px rgba(255, 215, 0, 0.3);
+}
+
+.speed-toggle[data-speed="fast"] {
+  border-color: #4ade80;
+}
+
+.speed-toggle[data-speed="slow"] {
+  border-color: #f97316;
+}
+
+/* Skip Queue Button */
+.skip-queue {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 1.1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--gray-700);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.skip-queue:hover {
+  background: var(--gray-700);
+  border-color: var(--action-glow);
+}
+
+/* Queue Indicator */
+.queue-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  height: 44px;
+  padding: 8px 10px;
+  font-size: 1.1rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--gold-bright);
+  background: rgba(212, 175, 55, 0.15);
+  border: 1px solid var(--border-accent);
+  border-radius: 8px;
+  box-sizing: border-box;
+  animation: queuePulse 1.5s ease-in-out infinite;
+}
+
+.queue-indicator .queue-count {
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+@keyframes queuePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 /* Poker Table */
@@ -257,6 +365,13 @@ h1 {
 
 .street-info span {
   color: var(--text-primary);
+}
+
+.session-controls {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .actions {

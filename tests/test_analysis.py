@@ -163,6 +163,35 @@ def test_compose_analysis_builds_payload_and_dc():
     assert payload.get("outs", {}).get("outs", 0) == 0
 
 
+def test_compose_analysis_adds_preflop_range_equity():
+    # Preflop: hero has AA, should have good equity vs default range
+    state = FakeStateCompose(
+        bets=[2, 2],
+        stacks=[100, 120],
+        pot_amounts=[3],
+        statuses=[True, True],
+        board_cards=[[]],
+        hole_cards=[["As", "Ah"], ["7s", "7c"]],
+        street_index=0,  # preflop
+    )
+    positions = {"1": "BTN", "2": "SB"}
+
+    _dc, payload = compose_analysis(
+        state,
+        hero_idx=0,
+        hero_seat=1,
+        session_stats=None,
+        positions_map=positions,
+        include_hand_strength=False,
+    )
+
+    rq = payload.get("range_equity")
+    assert rq is not None
+    assert rq["model"] == "vs_default_range"
+    assert isinstance(rq["equity_pct"], float)
+    assert rq["equity_pct"] > 50.0
+
+
 def test_compute_equity_vs_range_basic():
     # Hero AA vs very weak range -> equity should be well above 50%
     class FakeStateEq(FakeStateCompose):

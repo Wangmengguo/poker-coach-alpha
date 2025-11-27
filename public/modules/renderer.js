@@ -12,13 +12,13 @@ export class Renderer {
       actionsEl: document.getElementById('actions'),
       handCountEl: document.getElementById('handCount'),
       sessionStatusEl: document.getElementById('sessionStatus'),
-       connectionStatusEl: document.getElementById('connectionStatus'),
+      connectionStatusEl: document.getElementById('connectionStatus'),
       potAmountEl: document.getElementById('potAmount'),
       boardEl: document.getElementById('board'),
       streetInfoEl: document.getElementById('streetInfo'),
       reconnectBtn: document.getElementById('reconnectBtn'),
       nextHandBtn: document.getElementById('nextHandBtn'),
-      restartBtn: document.getElementById('restartBtn'),
+      startBtn: document.getElementById('startBtn'),
       showdownSummaryEl: document.getElementById('showdownSummary'),
       announcerEl: document.getElementById('srAnnouncer'),
       analysisEl: document.getElementById('analysis'),
@@ -115,15 +115,18 @@ export class Renderer {
   }
 
   updateSessionInfo(handId, sessionActive) {
-    const { handCountEl, sessionStatusEl, restartBtn } = this.cached;
+    const { handCountEl, sessionStatusEl, startBtn, nextHandBtn } = this.cached;
     const handNum = handId ? handId.replace('h_', '').replace(/^0+/, '') || '1' : '-';
     setText(handCountEl, `Hand: ${handNum}`);
     if (sessionStatusEl) {
       sessionStatusEl.textContent = sessionActive ? 'Playing' : 'Waiting';
       sessionStatusEl.style.color = sessionActive ? '#4ade80' : '#94a3b8';
     }
-    if (restartBtn) {
-      restartBtn.style.display = sessionActive ? 'none' : 'inline-block';
+    if (startBtn) {
+      startBtn.style.display = sessionActive ? 'none' : 'inline-block';
+    }
+    if (nextHandBtn && !sessionActive) {
+      nextHandBtn.style.display = 'none';
     }
   }
 
@@ -255,7 +258,11 @@ export class Renderer {
   }
 
   renderState(table, lastSnapshot) {
-    this.updateSessionInfo(table.hand_id, true);
+    const sessionActive =
+      Object.prototype.hasOwnProperty.call(table, 'session_active') && table.session_active === false
+        ? false
+        : true;
+    this.updateSessionInfo(table.hand_id, sessionActive);
     this.renderPotAndBoard(table.pot, table.board, table.street);
     this.renderPlayers(table, lastSnapshot);
     const { showdownSummaryEl } = this.cached;
@@ -298,6 +305,8 @@ export class Renderer {
       stats: lastStats,
       context: lastContext,
       hand_strength: lastHandStrength,
+      lifetime_stats: lifetimeStats,
+      range_equity: lastRangeEquity,
     } = analysis || {};
 
     // Core Math
@@ -305,6 +314,7 @@ export class Renderer {
       clearChildren(drawerCoreMathEl);
       if (lastPotMath) {
         const { to_call, pot, spr } = lastPotMath;
+
         const p1 = document.createElement('p');
         p1.textContent = `To call: $${Number(to_call ?? 0)}`;
         const p2 = document.createElement('p');
@@ -404,8 +414,12 @@ export class Renderer {
         const agg = Number(lastStats.afq_agg || 0);
         const tot = Number(lastStats.afq_total || 0);
         const afqPct = tot > 0 ? Math.round((agg * 100) / tot) : 0;
-         const hands = Number(lastStats.hands != null ? lastStats.hands : d);
-         const style = lastStats.style || 'Unknown';
+        const styleSource = lifetimeStats || lastStats;
+        const hands =
+          styleSource && styleSource.hands != null
+            ? Number(styleSource.hands)
+            : Number(d);
+        const style = styleSource && styleSource.style ? styleSource.style : 'Unknown';
 
         const p1 = document.createElement('p');
         p1.textContent = `VPIP: ${vpipPct}% (${n}/${d} hands)`;
@@ -414,10 +428,12 @@ export class Renderer {
         const p3 = document.createElement('p');
         p3.textContent = `AFq: ${afqPct}% (${agg}/${tot} actions)`;
         const p4 = document.createElement('p');
-        if (hands < 20) {
-          p4.textContent = `Style: Unknown (${hands} hands, small sample)`;
+        if (hands <= 0) {
+          p4.textContent = 'Style (overall): Unknown (0 hands)';
+        } else if (hands < 20) {
+          p4.textContent = `Style (overall): ${style} (${hands} hands, small sample)`;
         } else {
-          p4.textContent = `Style: ${style} (${hands} hands)`;
+          p4.textContent = `Style (overall): ${style} (${hands} hands)`;
         }
 
         drawerStatsEl.appendChild(p1);
@@ -438,7 +454,25 @@ export class Renderer {
     }
 
     // Debug JSON
-      if (analysisEl) {
+    if (analysisEl) {
+      // Compute call EV vs random only for debug purposes (not shown in main UI)
+      let callEvDebug = null;
+      if (lastHandStrength && lastHandStrength.hand_strength_pct != null && lastPotMath && lastPotExtra) {
+        const equity = Number(lastHandStrength.hand_strength_pct) / 100;
+        const toCall = Number(lastPotMath.to_call ?? 0);
+        const potDecision = Number(lastPotExtra.pot_decision ?? 0);
+        if (
+          Number.isFinite(equity) &&
+          Number.isFinite(toCall) &&
+          Number.isFinite(potDecision) &&
+          toCall > 0 &&
+          potDecision > 0
+        ) {
+          const ev = equity * potDecision - toCall;
+          callEvDebug = ev;
+        }
+      }
+
       const debugObj = {
         pot_math: lastPotMath,
         pot_extra: lastPotExtra,
@@ -448,6 +482,9 @@ export class Renderer {
         stats: lastStats,
         context: lastContext,
         hand_strength: lastHandStrength,
+        range_equity: lastRangeEquity,
+        lifetime_stats: lifetimeStats,
+        call_ev_vs_random: callEvDebug,
       };
       analysisEl.textContent = JSON.stringify(debugObj, null, 2);
     }

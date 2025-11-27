@@ -30,7 +30,12 @@ public/
 │   ├── state.js           // GameState 类
 │   ├── renderer.js        // Renderer 类（牌桌渲染）
 │   ├── actions.js         // ActionHandler 类（用户交互）
-│   └── analysis.js        // AnalysisDrawer 类
+│   ├── analysis.js        // AnalysisDrawer 类
+│   ├── audio.js           // AudioManager 类（音效 + BGM）
+│   └── messageQueue.js    // MessageQueue 类（动画节奏）
+├── sounds/                // 音效目录（可选）
+│   ├── README.md          // 音效下载指南
+│   └── bgm-lounge.mp3     // 背景音乐（可选）
 └── utils/
     ├── dom.js             // DOM 工具函数
     └── constants.js       // 常量定义
@@ -221,6 +226,95 @@ public/
 
 ---
 
+### Phase 3.6: Message Queue & Animation Pacing (消息队列与动画节奏) ✅ 已完成
+
+**目标**：解决 Bot 行动"快进"问题，让动画有节奏地播放
+
+**问题背景**：
+- 后端 `engine.advance()` 会同步执行所有 Bot 行动，直到轮到 human
+- 所有消息一次性通过 WebSocket 发送
+- 前端几乎同时收到并处理，导致动画被"跳过"
+
+**解决方案**：前端消息队列 + 延迟渲染
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| MessageQueue 类 | ✅ | 消息入队、定时处理、可跳过 |
+| 集成到 app.js | ✅ | WebSocket 消息走队列 |
+| 分类型延迟 | ✅ | action_taken 800ms, showdown 1500ms 等 |
+| 速度控制 UI | ✅ | 🎯/🐇/⏩/🐢 切换按钮 |
+| 用户行动跳过 | ✅ | 轮到用户时自动 flush 队列 |
+
+**MessageQueue 设计**：
+
+```javascript
+class MessageQueue {
+  constructor(processCallback, options = {}) {
+    this.queue = [];
+    this.processing = false;
+    this.processCallback = processCallback;
+    this.speedMultiplier = 1.0; // 1.0 = normal, 0.5 = fast, 2.0 = slow
+    this.paused = false;
+  }
+  
+  enqueue(msg) { /* 入队并启动处理 */ }
+  processNext() { /* 递归处理队列 */ }
+  getDelay(msg) { /* 根据消息类型返回延迟 */ }
+  flush() { /* 立即处理所有消息（跳过动画） */ }
+  setSpeed(multiplier) { /* 设置速度倍率 */ }
+}
+```
+
+**延迟配置**：
+
+| 消息类型 | 基础延迟 | 说明 |
+|----------|----------|------|
+| `action_taken` | 800ms | Bot 行动后停留 |
+| `snapshot` | 100ms | 快照快速处理 |
+| `showdown` | 1500ms | 摊牌停留观看 |
+| `hand_end` | 500ms | 手牌结束过渡 |
+| `prompt` | 0ms | 立即提示用户行动 |
+
+---
+
+### Phase 3.7: Audio Enhancement (音效增强) ✅ 已完成
+
+**目标**：简约现代风格音效 + 背景音乐支持
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 音效风格重设计 | ✅ | 简约现代风格（iOS/macOS 系统音风格） |
+| ADSR 包络 | ✅ | 柔和的攻击/衰减曲线 |
+| 低通滤波器 | ✅ | 消除刺耳高频 |
+| 外部音效支持 | ✅ | 可选加载 public/sounds/ 下的 MP3 |
+| 背景音乐 | ✅ | 循环播放、淡入淡出 |
+| BGM 控制 UI | ✅ | 🎵/🎶 切换按钮 |
+| 音效下载指南 | ✅ | public/sounds/README.md |
+
+**合成音效特点**：
+- 低频为主（120-350Hz）
+- 短促（50-200ms）
+- ADSR 包络 + 低通滤波
+- 音量适中（不刺耳）
+
+**音效对应**：
+
+| 行动 | 风格 |
+|------|------|
+| Check | 轻柔敲击（180Hz sine） |
+| Call | 温和音调（320Hz triangle） |
+| Raise | 上滑音（280→350Hz） |
+| Fold | 低沉放下声（120Hz） |
+| Turn | 柔和双音提示 |
+| Win | 三音琶音（温暖成功感） |
+
+**背景音乐**：
+- 文件：`public/sounds/bgm-lounge.mp3`
+- 风格：Lofi / Jazz Lounge / Ambient
+- 特性：自动循环、淡入淡出
+
+---
+
 ### Phase 6: Mobile & Touch Optimization (移动端优化) ⏳ 待开始
 
 **目标**：响应式完善 + 触控优化 + 底部抽屉
@@ -317,16 +411,20 @@ style.css
 | 2 | MVP Visual Baseline | ✅ 已完成 | 100% |
 | 3 | Layout Restructure | ✅ 已完成 | 100% |
 | 3.5 | Action Notifications & Audio | ✅ 已完成 | 100% |
+| 3.6 | Message Queue & Animation Pacing | ✅ 已完成 | 100% |
+| 3.7 | Audio Enhancement | ✅ 已完成 | 100% |
 | 4 | Immersive Visual Depth | ⏳ 待开始 | 0% |
 | 5 | Advanced Animations | ⏳ 待开始 | 0% |
 | 6 | Mobile Optimization | ⏳ 待开始 | 0% |
 
-**总体进度：约 57%（核心功能完成，包含行动通知与音效）**
+**总体进度：约 67%（核心功能完成，音效系统已增强）**
 
 ---
 
 ## 📝 Change Log
 
+- **2025-01**: 新增 Phase 3.7 音效增强（简约现代风格 + BGM）
+- **2025-01**: 新增 Phase 3.6 消息队列与动画节奏
 - **2024-01**: 合并 MODULARIZATION + BEAUTIFICATION 文档
 - **2024-01**: Phase 1-3 完成，调整移动端优化到 Phase 6
 

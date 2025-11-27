@@ -173,6 +173,34 @@ class TestPokerIntegration:
             assert len(table["players"]) == 6
             assert table["players"][0]["id"] == "human"
 
+    def test_websocket_receives_messages_when_session_started_after_connect(self):
+        """WebSocket should receive snapshot/prompt if session starts after client connects.
+
+        This mirrors the real frontend flow:
+        - WebSocket connects on page load
+        - REST /tables + /join + /start are called afterwards via the UI
+        """
+        client = TestClient(app)
+
+        # Connect WS first (as the browser does)
+        with client.websocket_connect("/ws/tables/default?player_id=human") as websocket:
+            # No state yet – engine has not started a session
+            # Now start session via REST, as the Start Game button does
+            client.post("/tables")
+            client.post("/tables/default/join")
+            start_res = client.post("/tables/default/start")
+            assert start_res.status_code == 200
+
+            # After starting the session, the WS should receive at least one message.
+            # First should be a snapshot of the table.
+            data = websocket.receive_json()
+            assert data["type"] == "snapshot"
+            assert "table" in data
+
+            table = data["table"]
+            assert len(table["players"]) == 6
+            assert table["players"][0]["id"] == "human"
+
     def test_session_termination_conditions(self):
         """Test that session ends under correct conditions."""
         # Test max hands

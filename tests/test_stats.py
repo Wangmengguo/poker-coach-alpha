@@ -80,8 +80,8 @@ def test_build_stats_payload_percentages_consistent():
 
     # Hands/sample size is exposed and used for style mapping
     assert payload["hands"] == 10
-    # With <20 hands, style should be Unknown
-    assert payload["style"] == "Unknown"
+    # With 10 hands and VPIP=40%, AFq=0% → Loose-Passive under current thresholds
+    assert payload["style"] == "Loose-Passive"
 
 
 def test_style_mapping_loose_aggressive_with_enough_hands():

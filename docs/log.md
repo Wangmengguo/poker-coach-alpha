@@ -59,3 +59,38 @@ Date: 2025-11-25
   - Button positioned at top-right (desktop) or bottom-right (mobile).
   - Hides automatically when `body.drawer-open` via CSS `opacity: 0; pointer-events: none`.
   - Separated close (×) and open button handlers in `bindDrawerToggle()` to fix reopening bug.
+
+Date: 2025-11-27
+
+- Session controls simplification + auto-join:
+  - Removed `Join Table` and `Restart Session` buttons from `public/index.html`, leaving a single primary `Start Session` CTA plus `Next Hand` and reconnect/audio controls.
+  - Updated `ActionHandler` in `public/modules/actions.js` to drop `joinBtn`/`restartBtn` wiring, keep a single `startBtn`, and rely on `join()` only programmatically.
+  - Added `hasAutoJoined` flag in `public/app.js` and, on `wsManager.on('open')`, automatically call `actionHandler.join()` once so the user is seated at the default table without clicking Join.
+  - Adjusted `Renderer.updateSessionInfo()` in `public/modules/renderer.js` to treat `sessionActive` as the single source of truth for showing/hiding `startBtn` and hiding `nextHandBtn` whenever the session is inactive.
+  - Tightened `/tables/{table_id}/start` in `app/main.py` to return `400 {"error": "session already active"}` when `engine.session_active` is true so clients must use `/restart` for mid-session resets.
+
+- Coach drawer persistence across hands/sessions:
+  - Changed `public/app.js` so `hand_end` and `session_end` handlers no longer call `renderer.closeDrawer()`, allowing the Coach drawer to remain open or closed based solely on explicit user actions.
+
+- Snapshot-aware UI after page reload (no-button bug fix):
+  - Extended `TableEngine.build_table_snapshot()` in `poker/engine.py` to include `session_active` and `awaiting_next_hand` flags derived from `session_active` and `is_hand_over()`.
+  - Updated `Renderer.renderState()` in `public/modules/renderer.js` to infer `sessionActive` from `table.session_active` instead of always assuming an active session, ensuring `Start Session` reappears when a session is no longer active.
+  - Enhanced the `snapshot` handler in `public/app.js` to, after rendering state and clearing analysis, inspect `table.awaiting_next_hand` and `table.legal_actions`:
+    - If `awaiting_next_hand` is true, show `Next Hand` so a page refresh at showdown still lets the user continue the session.
+    - Else, if there are legal actions and `to_act === 1`, immediately call `actionHandler.renderActions()` so a mid-hand refresh restores the Fold/Call/Raise controls.
+  - Together, these changes fix the scenario where reloading the page in a finished hand or between hands left the user with no visible session/next-hand buttons despite being in a valid session.
+
+- Session controls layout alignment:
+  - Moved `Start Session` and `Continue Next Hand` buttons from the top `.controls` bar into a new `.session-controls` row inside `.game-controls` in `public/index.html`, directly above the main `#actions` area.
+  - Added `.session-controls` styles in `public/style.css` (horizontal flex layout, centered, with small vertical spacing) so session-level controls visually live in the same region as per-hand actions under the table, while the top bar is reserved for connection/audio/utility controls.
+
+- Message queue indicator alignment and button overlap fixes:
+  - Fixed queue indicator (⏳) vertical alignment with control buttons by adding `align-items: center` to `.controls` container and setting consistent `height: 44px`, `font-size: 1.1rem` on `.queue-indicator`.
+  - Separated hourglass emoji and count number into distinct styled elements (`<span class="queue-count">`) for better visual control.
+  - Fixed race condition where Continue button and action buttons (Fold/Call/Raise) could appear simultaneously during queue processing:
+    - `renderActions()` in `actions.js` now hides `nextHandBtn` before rendering action buttons.
+    - `snapshot` handler in `app.js` now clears action buttons before showing Continue button.
+
+- Message queue count logic improvement:
+  - Changed `getStatus()` in `messageQueue.js` to return `actionCount` that only counts `action_taken` messages (actual player moves like fold/call/raise).
+  - Excludes `snapshot` (state updates), `hand_end`, `session_end` etc. from the count, so the indicator shows only pending bot actions.
