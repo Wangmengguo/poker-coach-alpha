@@ -298,6 +298,12 @@ export class ActionHandler {
 
   sendAction(action) {
     if (!this.wsManager || !this.wsManager.isConnected()) return;
+    
+    // Clear action buttons immediately after user acts
+    if (this.actionsEl) {
+      this.actionsEl.innerHTML = '';
+    }
+    
     const hand_id = this.gameState.getTable()?.hand_id || 'h_00000';
     const payload = {
       type: 'action',

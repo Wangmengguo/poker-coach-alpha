@@ -94,3 +94,11 @@ Date: 2025-11-27
 - Message queue count logic improvement:
   - Changed `getStatus()` in `messageQueue.js` to return `actionCount` that only counts `action_taken` messages (actual player moves like fold/call/raise).
   - Excludes `snapshot` (state updates), `hand_end`, `session_end` etc. from the count, so the indicator shows only pending bot actions.
+
+- Message queue animation pacing improvements:
+  - Removed special `prompt` handling that was flushing the entire queue, causing bot actions to be skipped. All messages now queue normally so bot action animations play properly before showing user's turn.
+  - Added `board_change` delay (1200ms) for community card deals: tracks `_lastBoardLength` in MessageQueue, detects when snapshot contains new board cards (flop/turn/river), and applies longer pause so players can see the new cards.
+  - Reset board tracking on `hand_end` to prepare for next hand.
+
+- Action button UX improvement:
+  - Clear action buttons immediately in `sendAction()` after user acts (fold/call/raise), so the UI shows blank space while waiting for the hand to continue or end, rather than leaving stale buttons visible.

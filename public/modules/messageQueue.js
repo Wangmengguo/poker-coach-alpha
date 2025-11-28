@@ -11,9 +11,10 @@
 const DEFAULT_DELAYS = {
   action_taken: 800,   // Bot action - pause to show notification
   snapshot: 100,       // State update - quick
+  board_change: 1200,  // New community cards dealt - longer pause
   showdown: 1500,      // Showdown - longer pause to view hands
   hand_end: 500,       // Hand completion - brief pause
-  prompt: 0,           // User's turn - immediate (flush queue)
+  prompt: 0,           // User's turn - immediate
   analysis: 0,         // Analysis update - immediate
   session_end: 500,    // Session end - brief pause
   error: 0,            // Errors - immediate
@@ -44,6 +45,9 @@ export class MessageQueue {
 
     // Track pending timeout for cancellation
     this._currentTimeout = null;
+    
+    // Track board state to detect new community cards
+    this._lastBoardLength = 0;
   }
 
   /**
@@ -51,15 +55,8 @@ export class MessageQueue {
    * @param {Object} msg - WebSocket message
    */
   enqueue(msg) {
-    // Special handling: 'prompt' messages should flush the queue first
-    // so the user can act immediately without waiting
-    if (msg.type === 'prompt') {
-      this.flush();
-      this.processCallback(msg);
-      this._notifyQueueChange();
-      return;
-    }
-
+    // All messages go through the queue normally so bot actions animate properly.
+    // prompt messages are no longer special-cased to flush the queue.
     this.queue.push(msg);
     this._notifyQueueChange();
 
@@ -113,7 +110,27 @@ export class MessageQueue {
    * @private
    */
   _getDelay(msg) {
-    const baseDelay = this.delays[msg.type] ?? this.delays.default;
+    let baseDelay = this.delays[msg.type] ?? this.delays.default;
+    
+    // Check for board change in snapshot messages (new community cards)
+    if (msg.type === 'snapshot' && msg.table) {
+      const board = msg.table.board || [];
+      const currentBoardLength = board.length;
+      
+      if (currentBoardLength > this._lastBoardLength && currentBoardLength > 0) {
+        // New community cards were dealt - use longer delay
+        baseDelay = this.delays.board_change;
+      }
+      
+      // Update tracked board length
+      this._lastBoardLength = currentBoardLength;
+    }
+    
+    // Reset board tracking on hand_end
+    if (msg.type === 'hand_end') {
+      this._lastBoardLength = 0;
+    }
+    
     return Math.round(baseDelay * this.speedMultiplier);
   }
 
