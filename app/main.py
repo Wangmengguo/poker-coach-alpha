@@ -8,10 +8,19 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from poker.engine import EngineConfig, TableEngine
 from ws.protocol import ClientAction, Error, validate_action_against_legal
 from poker.analysis.equity import compute_hand_strength, HandStrengthResult
+from poker.analysis.compose import compose_analysis
+from poker.ai_coach import (
+    generate_ai_advice,
+    get_ai_provider_from_env,
+    get_allowed_model_aliases,
+    get_current_model_alias,
+    set_current_model_alias,
+)
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -63,6 +72,67 @@ _engines: Dict[str, TableEngine] = {
 
 # Simple in-memory cache for hand-strength results keyed by table/hand/street/hero state
 _hand_strength_cache: Dict[tuple, HandStrengthResult] = {}
+_ai_provider = get_ai_provider_from_env()
+
+
+class AiModelAliasBody(BaseModel):
+    model_alias: str
+
+
+async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
+    engine = _engines.get(table_id)
+    if not engine or engine.state is None:
+        return
+    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+    if idx is None:
+        return
+    try:
+        positions_map = None
+        try:
+            positions_map = engine._positions_map()  # type: ignore[attr-defined]
+        except Exception:
+            positions_map = None
+        dc, _payload = compose_analysis(
+            engine.state,
+            idx,
+            seat,
+            session_stats=getattr(engine, "session_stats", None),
+            positions_map=positions_map,
+            include_hand_strength=False,
+        )
+        legal_actions = engine.legal_actions()
+        history = getattr(engine, "action_history", None)
+        advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
+        msg = {
+            "type": "ai_advice",
+            "seq": engine.next_sequence(),
+            "to_act": seat,
+            "advice": {
+                "recommended_action": advice.recommended_action,
+                "secondary_action": advice.secondary_action,
+                "confidence": advice.confidence,
+                "explanation": advice.explanation,
+                "reason": advice.reason,
+            },
+        }
+        await manager.broadcast(table_id, msg)
+    except Exception:
+        try:
+            msg = {
+                "type": "ai_advice",
+                "seq": engine.next_sequence(),
+                "to_act": seat,
+                "advice": {
+                    "recommended_action": None,
+                    "secondary_action": None,
+                    "confidence": None,
+                    "explanation": None,
+                    "reason": "error",
+                },
+            }
+            await manager.broadcast(table_id, msg)
+        except Exception:
+            pass
 
 
 async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
@@ -204,8 +274,25 @@ def index() -> HTMLResponse:
 
 @app.post("/tables")
 def create_table():
-    # MVP: single default table
-    return {"table_id": DEFAULT_TABLE_ID}
+    table_id = DEFAULT_TABLE_ID
+    _engines[table_id] = TableEngine(EngineConfig(session_id=table_id))
+    return {"table_id": table_id}
+
+
+@app.get("/settings/ai_model")
+def get_ai_model_settings():
+    return {
+        "model_alias": get_current_model_alias(),
+        "allowed": get_allowed_model_aliases(),
+    }
+
+
+@app.post("/settings/ai_model")
+def set_ai_model_settings(body: AiModelAliasBody):
+    alias = body.model_alias
+    if not set_current_model_alias(alias):
+        return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
+    return {"model_alias": alias}
 
 
 @app.post("/tables/{table_id}/join")
@@ -238,6 +325,7 @@ def start_session(table_id: str):
             # After broadcasting a prompt, compute hand strength asynchronously
             if isinstance(m, dict) and m.get("type") == "prompt":
                 anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
+                anyio.from_thread.run(_broadcast_ai_advice, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -263,6 +351,7 @@ def next_hand(table_id: str):
             anyio.from_thread.run(manager.broadcast, table_id, m)
             if isinstance(m, dict) and m.get("type") == "prompt":
                 anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
+                anyio.from_thread.run(_broadcast_ai_advice, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -312,6 +401,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     seat_act = engine._state_index_to_seat(idx)
                     if seat_act == 1:
                         asyncio.create_task(_broadcast_hand_strength(table_id, seat_act))
+                        asyncio.create_task(_broadcast_ai_advice(table_id, seat_act))
             except Exception:
                 pass
         # Main loop: receive client actions and advance engine
@@ -406,6 +496,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     if isinstance(m, dict) and m.get("type") == "prompt":
                         # Schedule async hand-strength compute without blocking UI
                         asyncio.create_task(_broadcast_hand_strength(table_id, m.get("to_act", 1)))
+                        asyncio.create_task(_broadcast_ai_advice(table_id, m.get("to_act", 1)))
             else:
                 await websocket.send_json({"type": "ack", "received": data})
     except WebSocketDisconnect:

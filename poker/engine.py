@@ -97,6 +97,8 @@ class TableEngine:
         self.button_seat: int = 1
         # Session-scoped human-only stats (MVP v0.3)
         self.session_stats: HumanStats = new_session_stats()
+        # Per-hand action history (for coach/LLM context)
+        self.action_history: List[Dict] = []
 
     def start_session(self) -> None:
         # Reset session state
@@ -192,6 +194,8 @@ class TableEngine:
         self.folded_flags = [False] * len(stacks)
         # Reset per-hand hole card cache
         self.hand_hole_cards = {}
+        # Reset per-hand action history
+        self.action_history = []
 
         # Generate deterministic seed for this hand
         hand_seed = self._generate_hand_seed()
@@ -351,6 +355,25 @@ class TableEngine:
                 )
         except Exception:
             # Stats should never break core game flow
+            pass
+
+        # Append to per-hand action history for coaching/LLM context
+        try:
+            if actor_seat is not None:
+                positions_map = self._positions_map()
+                pos = positions_map.get(str(actor_seat)) if positions_map else None
+                entry: Dict[str, Any] = {
+                    "hand_id": f"h_{self.hand_index:05d}",
+                    "street": street_name,
+                    "seat": actor_seat,
+                    "position": pos,
+                    "action_type": str(t or ""),
+                    "amount": int(action.get("amount", 0)) if t in ("call", "raise_to") else 0,
+                    "to_call_before": int(to_call_before),
+                }
+                self.action_history.append(entry)
+        except Exception:
+            # History should never break core flow
             pass
 
     def is_hand_over(self) -> bool:

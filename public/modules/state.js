@@ -18,6 +18,7 @@ export class GameState {
       hand_strength: null,
       lifetime_stats: null,
       range_equity: null,
+      ai_advice: null,
     };
     this.connection = { status: 'disconnected', retryCount: 0 };
     this.legalActions = [];

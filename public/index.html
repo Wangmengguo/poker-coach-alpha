@@ -20,6 +20,10 @@
       
       <div class="controls">
         <button id="reconnectBtn" style="display: none;" aria-label="Reconnect to server">Reconnect</button>
+        <div class="model-selector">
+          <span class="model-label">Model</span>
+          <select id="modelSelect" aria-label="Select AI model"></select>
+        </div>
         <button id="audioToggleBtn" class="audio-toggle" aria-label="Toggle sound effects" title="Sound effects">🔊</button>
         <button id="bgmToggleBtn" class="bgm-toggle" aria-label="Toggle background music" title="Background music">🎵</button>
         <button id="speedToggleBtn" class="speed-toggle" aria-label="Animation speed: Normal" title="Animation speed">🎯</button>
@@ -137,6 +141,10 @@
           <div class="drawer-section">
             <h4>Hand Strength</h4>
             <div id="drawerHandStrength" class="drawer-section-body"></div>
+          </div>
+          <div class="drawer-section">
+            <h4>AI Coach</h4>
+            <div id="drawerAiCoach" class="drawer-section-body"></div>
           </div>
           <div class="drawer-section">
             <h4>Human Stats</h4>

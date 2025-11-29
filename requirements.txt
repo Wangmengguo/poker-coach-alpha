@@ -1,5 +1,23 @@
+# Core web framework
 fastapi
 uvicorn[standard]
 pydantic
-pokerkit
 httpx
+
+# Poker engine
+pokerkit
+
+# AI/LLM integration
+litellm==1.80.7
+openai==2.8.1
+
+# HTTP client for async operations
+aiohttp==3.13.2
+
+# Text processing
+tiktoken==0.12.0
+tokenizers==0.22.1
+
+# Utilities
+fastuuid==0.14.0
+jsonschema==4.25.1

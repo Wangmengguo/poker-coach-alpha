@@ -30,6 +30,7 @@ export class Renderer {
       drawerHandTextureEl: document.getElementById('drawerHandTexture'),
       drawerHandStrengthEl: document.getElementById('drawerHandStrength'),
       drawerStatsEl: document.getElementById('drawerStats'),
+      drawerAiCoachEl: document.getElementById('drawerAiCoach'),
       seats: {},
     };
 
@@ -294,6 +295,7 @@ export class Renderer {
       drawerStatsEl,
       drawerHeroPosEl,
       analysisEl,
+      drawerAiCoachEl,
     } = this.cached;
 
     const {
@@ -307,6 +309,7 @@ export class Renderer {
       hand_strength: lastHandStrength,
       lifetime_stats: lifetimeStats,
       range_equity: lastRangeEquity,
+      ai_advice: lastAiAdvice,
     } = analysis || {};
 
     // Core Math
@@ -439,11 +442,54 @@ export class Renderer {
         drawerStatsEl.appendChild(p1);
         drawerStatsEl.appendChild(p2);
         drawerStatsEl.appendChild(p3);
-        drawerStatsEl.appendChild(p4);
+      drawerStatsEl.appendChild(p4);
       } else {
         const p = document.createElement('p');
         p.textContent = 'No stats yet';
         drawerStatsEl.appendChild(p);
+      }
+    }
+
+    if (drawerAiCoachEl) {
+      clearChildren(drawerAiCoachEl);
+      if (lastAiAdvice && lastAiAdvice.recommended_action) {
+        const rec = lastAiAdvice.recommended_action;
+        const sec = lastAiAdvice.secondary_action;
+        const conf = lastAiAdvice.confidence;
+        const expl = lastAiAdvice.explanation;
+
+        const p1 = document.createElement('p');
+        const t = rec.type || 'action';
+        const amt = rec.amount != null ? ` $${rec.amount}` : '';
+        p1.textContent = `Recommended: ${t}${amt}`;
+        drawerAiCoachEl.appendChild(p1);
+
+        if (sec && sec.type) {
+          const p2 = document.createElement('p');
+          const st = sec.type;
+          const sa = sec.amount != null ? ` $${sec.amount}` : '';
+          p2.textContent = `Alternative: ${st}${sa}`;
+          drawerAiCoachEl.appendChild(p2);
+        }
+
+        const p3 = document.createElement('p');
+        if (typeof conf === 'number') {
+          const pct = Math.round(conf * 100);
+          p3.textContent = `Confidence: ${pct}%`;
+        } else {
+          p3.textContent = 'Confidence: —';
+        }
+        drawerAiCoachEl.appendChild(p3);
+
+        if (expl) {
+          const p4 = document.createElement('p');
+          p4.textContent = expl;
+          drawerAiCoachEl.appendChild(p4);
+        }
+      } else {
+        const p = document.createElement('p');
+        p.textContent = 'No AI advice yet';
+        drawerAiCoachEl.appendChild(p);
       }
     }
 
@@ -485,6 +531,7 @@ export class Renderer {
         range_equity: lastRangeEquity,
         lifetime_stats: lifetimeStats,
         call_ev_vs_random: callEvDebug,
+        ai_advice: lastAiAdvice,
       };
       analysisEl.textContent = JSON.stringify(debugObj, null, 2);
     }

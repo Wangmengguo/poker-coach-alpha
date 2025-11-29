@@ -153,9 +153,35 @@ class ActionNotification(BaseModel):
     is_bot: bool = False
 
 
+class AiAdvicePayload(BaseModel):
+    recommended_action: Optional[LegalAction] = None
+    secondary_action: Optional[LegalAction] = None
+    confidence: Optional[float] = None
+    explanation: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class AiAdviceUpdate(BaseModel):
+    type: Literal["ai_advice"] = "ai_advice"
+    seq: int
+    to_act: int
+    advice: Optional[AiAdvicePayload] = None
+
+
 # ========== Message Union Type ==========
 
-ServerMessage = Union[Snapshot, Prompt, HandEnd, Showdown, SessionEnd, Error, Ack, AnalysisUpdate, ActionNotification]
+ServerMessage = Union[
+    Snapshot,
+    Prompt,
+    HandEnd,
+    Showdown,
+    SessionEnd,
+    Error,
+    Ack,
+    AnalysisUpdate,
+    ActionNotification,
+    AiAdviceUpdate,
+]
 ClientMessage = Union[ClientAction, Resume]
 
 

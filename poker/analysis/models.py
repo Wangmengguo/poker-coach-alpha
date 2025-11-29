@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -35,6 +35,10 @@ class DecisionContext:
     # Context
     players_count: int
     human_stats: Optional[Dict[str, Any]] = None
+
+    # Cards (hero + public board) for coaching/LLM contexts
+    hero_cards: Optional[List[str]] = None
+    board_cards: Optional[List[str]] = None
 
     # Future extensions
     villain_ranges: Optional[Dict[int, Any]] = None

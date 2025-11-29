@@ -124,6 +124,44 @@ This document captures the staged plan from MVP to V3, with concrete interfaces,
 - Tests
   - Validate equity against known calculators for sampled states; snapshot tests for UI.
 
+## V1.5 — LLM Coach (language advice layer)
+- Goals
+  - Build a lightweight “AI coach” that turns existing numeric metrics (DecisionContext + analysis payload) into human-readable advice.
+  - Keep decision logic and model provider decoupled: the LLM never auto-acts; it only explains and suggests.
+  - Support multiple LLM providers (OpenAI, Anthropic, Azure, local, etc.) via a thin adapter layer and environment-based configuration.
+- Backend: AiCoachService
+  - Introduce an `AiProvider` interface (e.g., `generate(prompt: str) -> str` / async equivalent) and provide concrete adapters per provider (OpenAI-style, Anthropic-style, local).
+  - Configure provider via env vars: `AI_PROVIDER` (e.g. `openai`, `anthropic`, `dummy`), `AI_MODEL`, and provider-specific keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
+  - Reuse `DecisionContext` + `legal_actions` to build a provider-neutral prompt that includes:
+    - Street, positions, pot, to_call, pot odds, required equity, SPR, effective stack.
+    - Hero hand label, hand_strength_pct (if available), draws/outs, board texture.
+    - Players count and human session stats (VPIP/PFR/AFq/style) plus preflop range equity when applicable.
+  - Parse LLM output into a structured advice object:
+    - `recommended_action` (restricted to current `legal_actions`, including sizing when relevant).
+    - Optional `secondary_action`, `confidence`, and a short `explanation`.
+  - Enforce strict timeouts and fallbacks: if provider is disabled, misconfigured, or times out, return a degraded/null advice payload without impacting gameplay.
+- Model selection & LiteLLM integration
+  - Use LiteLLM as the primary provider adapter when `AI_PROVIDER=openai` and a valid `OPENAI_API_KEY` is present; otherwise fall back to a `DummyProvider`.
+  - Define a small, whitelisted set of model aliases (e.g., `fast`, `strong`, `cheap`) mapped to concrete LiteLLM model strings (e.g., `openai/gpt-4.1-mini`, `openai/gpt-4.1`).
+  - Keep a process-local `current_model_alias` with a sensible default (`AI_MODEL_ALIAS` env or `fast`); use it inside the provider to choose the underlying model.
+  - Expose lightweight helpers to get/set the current alias (`get_current_model_alias()`, `set_current_model_alias(alias)`) with validation against the whitelist.
+  - Provide development-only REST endpoints:
+    - `GET /settings/ai_model` → `{model_alias, allowed}` for debugging/testing.
+    - `POST /settings/ai_model` with `{model_alias}` → update `current_model_alias` if allowed; otherwise return 400.
+  - For initial integration, keep action selection heuristic-based (using `DecisionContext`), and use the LLM primarily to generate the natural-language `explanation` text, ensuring stability and safety while still allowing model comparison.
+- Protocol: WebSocket messages
+  - Add a server→client message type `ai_advice` that carries:
+    - `to_act` seat; structured advice payload (recommended/secondary action, confidence, explanation); optional `reason` on degradation.
+  - Only emit `ai_advice` for the human seat when it is their turn; advice is non-binding and never used for bot decisions.
+- Client UX
+  - Extend the existing Coach drawer with an “AI Coach” section:
+    - Show recommended action + confidence (when available) and a 1–3 line explanation referencing core metrics (pot odds, SPR, hand strength, draws).
+    - Make AI coach toggleable in the UI (e.g., “Enable AI Coach”) without breaking the numeric Coach panel.
+  - Log AI advice events in the client log for debugging and user learning.
+- Tests & observability
+  - Unit-test prompt construction and response parsing independently of any real provider (using a dummy `AiProvider`).
+  - Add logging hooks (backend) to record anonymized decision context + AI advice for spot-checks, respecting privacy and avoiding storage of raw hole cards where not needed.
+
 ## V2 — Coach with advice
 - Approach A: Search-based advisor (fast approximate)
   - Depth-limited lookahead; opponent range; rollout EV via MC; sizes ∈ {0.33, 0.66, 1.0 pot, all-in}; CFR-lite few iterations under ~200ms budget.
@@ -152,7 +190,8 @@ This document captures the staged plan from MVP to V3, with concrete interfaces,
 - Week 1: MVP backend (raise sizing, rotation, showdown winners) + minimal client; stable hand loop; tests.
 - Week 2: MVP UX polish (positions, Continue button), deterministic seeds; alpha demo.
 - Week 3: V1 coach metrics + structured logging; UI panel; validation tests.
-- Week 4–6: V2 advisor A (search/CFR-lite), explanations, perf tuning; explore offline policy experiments.
+- Week 4: V1.5 LLM Coach (AiCoachService, AiProvider abstraction, `ai_advice` WS message, basic AI Coach UI section, env-based provider selection).
+- Week 5–6: V2 advisor A (search/CFR-lite), EV-based action ranking and explanations, perf tuning; explore offline policy experiments.
 - Week 7+: V3 foundations (auth, DB, Redis, lobby), multi-table, production hardening.
 
 ## Immediate next steps (MVP)

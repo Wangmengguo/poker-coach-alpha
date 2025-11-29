@@ -102,3 +102,27 @@ Date: 2025-11-27
 
 - Action button UX improvement:
   - Clear action buttons immediately in `sendAction()` after user acts (fold/call/raise), so the UI shows blank space while waiting for the hand to continue or end, rather than leaving stale buttons visible.
+
+Date: 2025-11-28
+
+- V1.5 AI Coach backend integration:
+  - Added `poker/ai_coach.py` with `AiAdvice` dataclass, heuristic-based action selection (using `DecisionContext.hand_strength_pct` vs `required_equity_pct`), and a pluggable `AiProvider` interface.
+  - Introduced LiteLLM-backed `LitellmProvider` plus `DummyProvider`; provider selection is controlled via `AI_PROVIDER` env (e.g., `openai` vs `dummy`) and standard LiteLLM env vars (such as `OPENAI_API_KEY` / `OPENAI_API_BASE` for OpenAI-compatible gateways).
+  - Defined whitelisted model aliases (`fast`, `strong`, `cheap`) mapped to concrete LiteLLM model ids in `ALLOWED_MODELS`, with helpers to get/set the current alias (`get_current_model_alias`, `set_current_model_alias`).
+  - Updated `generate_ai_advice(...)` so that the LLM is used to generate natural-language explanations, while action selection remains purely heuristic and safe; on errors or misconfiguration, the coach falls back to heuristics only.
+- AI advice protocol and FastAPI wiring:
+  - Extended `ws/protocol.py` with `AiAdvicePayload` and `AiAdviceUpdate` types and added `ai_advice` to the `ServerMessage` union.
+  - In `app/main.py`, added `_broadcast_ai_advice(...)` which builds a `DecisionContext` via `compose_analysis`, computes advice via `generate_ai_advice`, and broadcasts `ai_advice` messages whenever a human `prompt` is emitted or on reconnect when it is the human’s turn.
+  - Introduced `/settings/ai_model` REST endpoints (`GET` to inspect current alias and allowed list, `POST` to change alias) to support runtime model switching during development and testing.
+- Frontend AI Coach UI:
+  - Extended the Coach drawer in `public/index.html` and `public/modules/renderer.js` with an “AI Coach” section that displays the recommended action, optional secondary action, confidence (as a percentage), and explanation text when available.
+  - Updated `public/modules/state.js` and `public/app.js` to track `ai_advice` in `GameState.analysis` and handle `ai_advice` WebSocket messages, logging explanations for debugging.
+- Model alias configuration for OpenAI-compatible gateway:
+  - Replaced generic `fast/strong/cheap` aliases with real model names in `ALLOWED_MODELS` (e.g., `claude-4.5-sonnet`, `gpt-5.1-chat-latest`, `deepseek-chat`, `deepseek-reasoner`, `moonshotai/kimi-k2-instruct`, `kimi-k2-thinking`, `gemini-3-pro-preview`), keeping keys and underlying model ids identical so the UI and `/settings/ai_model` always expose the true model identifier used by the gateway.
+  - Documented AI Coach / LiteLLM configuration in `README.md`, including environment variables (`AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_API_BASE`, `AI_MODEL_ALIAS`), the heuristic/LLM modes, and the `/settings/ai_model` endpoint for runtime model switching.
+- LLM context refinement and model selector UI:
+  - Extended `DecisionContext` with `hero_cards` and `board_cards`, and wired them from PokerKit state via `compose_analysis`, so the LLM sees HERO hole cards and the public board while never seeing opponents’ hidden cards.
+  - Added per-hand `action_history` tracking to `TableEngine` (seat, position, street, action_type, amount, to_call_before) and included a compact recent history summary in the LLM prompt, giving better context about how the pot was built.
+  - Implemented Plan B in `poker/ai_coach.py`: the LLM now returns a JSON object with `recommended`, `secondary`, `confidence`, and `explanation`; `_parse_llm_json` and `_match_action_spec` map these to current `legal_actions`, and the coach prefers LLM-selected actions when they are legal, falling back to heuristic actions otherwise.
+  - Added `players_count` to the LLM context so the model can distinguish heads-up from multiway pots in a lightweight way.
+  - Implemented a model selector UI in `public/index.html` / `public/style.css` / `public/app.js`: a compact “Model” pill with a `<select>` populated from `/settings/ai_model`, allowing runtime switching between configured models (e.g., `claude-4.5-sonnet`, `deepseek-chat`, `gpt-5.1-chat-latest`) with changes logged in the Game Log.

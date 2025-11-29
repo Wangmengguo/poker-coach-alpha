@@ -159,6 +159,8 @@ def compose_analysis(
         board_texture=board_texture,
         players_count=players_count,
         human_stats=stats_payload,
+        hero_cards=hero_cards or None,
+        board_cards=board_cards or None,
         degraded=degraded,
         reason=reason,
     )

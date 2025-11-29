@@ -15,6 +15,49 @@ const analysisDrawer = new AnalysisDrawer(renderer, gameState);
 // Track whether we've already auto-joined the default table
 let hasAutoJoined = false;
 
+async function initModelSelector() {
+  const selectEl = document.getElementById('modelSelect');
+  if (!selectEl) return;
+  try {
+    const res = await fetch('/settings/ai_model');
+    if (!res.ok) return;
+    const data = await res.json();
+    const { model_alias: current, allowed } = data || {};
+    if (!allowed || !Array.isArray(allowed)) return;
+
+    selectEl.innerHTML = '';
+    allowed.forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === current) {
+        opt.selected = true;
+      }
+      selectEl.appendChild(opt);
+    });
+
+    selectEl.onchange = async () => {
+      const alias = selectEl.value;
+      try {
+        const resp = await fetch('/settings/ai_model', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_alias: alias }),
+        });
+        if (!resp.ok) {
+          renderer.log(`Failed to switch model to ${alias}`);
+          return;
+        }
+        renderer.log(`AI model switched to: ${alias}`);
+      } catch (e) {
+        renderer.log(`Error switching model: ${e}`);
+      }
+    };
+  } catch (e) {
+    // ignore
+  }
+}
+
 /**
  * Process a single WebSocket message
  * Extracted to be used with MessageQueue
@@ -144,6 +187,18 @@ function processMessage(msg) {
           renderer.log(
             `Hand strength degraded: ${hs.reason || 'timeout or error'}`
           );
+        }
+      } catch (e) {
+        // ignore
+      }
+      break;
+    }
+    case 'ai_advice': {
+      try {
+        const advice = msg.advice || null;
+        analysisDrawer.updateAndRender({ ai_advice: advice }, false);
+        if (advice && advice.explanation) {
+          renderer.log(`AI Coach: ${advice.explanation}`);
         }
       } catch (e) {
         // ignore
@@ -307,6 +362,8 @@ wsManager.on('open', () => {
     hasAutoJoined = true;
     actionHandler.join();
   }
+
+  initModelSelector();
 });
 
 wsManager.on('reconnecting', ({ attempts }) => {

@@ -1,7 +1,7 @@
 # Poker Coach / Bot v0 计划（基于现有 MVP 教练功能）
 
 **目标版本**：coach_bot_v0  
-**状态**：草案（待迭代）  
+**状态**：✅ **已完成**（2025-01-XX）  
 **背景**：在当前 MVP（pot math + hand strength + human stats + 基础 hand/texture/outs）基础上，补齐“解释用数学核心函数”和“统一决策上下文”，为后续 V1/ V2 Coach（含建议）以及 Bot 决策提供可复用的基础设施。
 
 ---
