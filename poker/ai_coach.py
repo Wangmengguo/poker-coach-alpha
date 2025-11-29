@@ -26,19 +26,17 @@ class DummyProvider:
         return ""
 
 
-# Whitelisted model aliases for LiteLLM-backed providers.
+# Whitelisted model aliases for the AI coach.
 # Keys are the human-visible names; values are the underlying model ids
-# passed to LiteLLM. For the current OpenAI-compatible gateway setup,
-# we keep them identical so the UI always shows the real model name.
+# passed to the OpenAI-compatible gateway. In the current setup we keep
+# them identical so the UI always shows the real model name.
 ALLOWED_MODELS: Dict[str, str] = {
     "claude-4.5-sonnet": "claude-4.5-sonnet",
     "claude-opus-4-5": "claude-opus-4-5",
     "moonshotai/kimi-k2-instruct": "moonshotai/kimi-k2-instruct",
-    "kimi-k2-thinking": "kimi-k2-thinking",
-    "gemini-3-pro-preview": "gemini-3-pro-preview",
     "gpt-5.1-chat-latest": "gpt-5.1-chat-latest",
     "deepseek-chat": "deepseek-chat",
-    "deepseek-reasoner": "deepseek-reasoner",
+    "grok-4-fast-reasoning": "grok-4-fast-reasoning",
 }
 
 _DEFAULT_ALIAS = "gpt-5.1-chat-latest"
@@ -67,47 +65,36 @@ def set_current_model_alias(alias: str) -> bool:
     return True
 
 
-class LitellmProvider:
+class OpenAICompatibleProvider:
     async def generate(self, prompt: str) -> str:
-        """Call LiteLLM with the current model alias.
+        """Call an OpenAI-compatible /chat/completions endpoint via the OpenAI SDK."""
+        # Import locally so environments without the dependency can still import this module.
+        from openai import AsyncOpenAI  # type: ignore
 
-        Any errors are swallowed and result in an empty string so that
-        the caller can safely fall back to heuristic-only advice.
-        """
-        try:
-            import litellm  # type: ignore
-        except Exception:
-            return ""
+        api_key = os.getenv("OPENAI_API_KEY") or ""
+        base_url = os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_API_URL") or ""
+        client = AsyncOpenAI(api_key=api_key or None, base_url=base_url or None)
 
         alias = get_current_model_alias()
         model = ALLOWED_MODELS.get(alias, alias)
-        try:
-            resp = await litellm.acompletion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=256,
-                temperature=0.2,
-            )
-        except Exception:
-            return ""
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=256,
+            temperature=0.2,
+        )
 
-        try:
-            choice = resp.choices[0]
-            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
-            if isinstance(message, dict):
-                content = message.get("content")
-            else:
-                content = getattr(message, "content", None)
-            if isinstance(content, list):
-                text = "".join(
-                    part.get("text", "") if isinstance(part, dict) else str(part)
-                    for part in content
-                )
-            else:
-                text = content
-            return str(text or "").strip()
-        except Exception:
-            return ""
+        choice = resp.choices[0]
+        message = choice.message
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            text = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        else:
+            text = content
+        return str(text or "").strip()
 
 
 def _match_action_spec(
@@ -381,10 +368,10 @@ def get_ai_provider_from_env() -> Optional[AiProvider]:
     provider_name = os.getenv("AI_PROVIDER", "").strip().lower()
     if not provider_name or provider_name == "dummy":
         return DummyProvider()
-    if provider_name == "openai":
+    if provider_name in {"openai", "gateway"}:
         if not os.getenv("OPENAI_API_KEY"):
             return DummyProvider()
-        return LitellmProvider()
+        return OpenAICompatibleProvider()
     return DummyProvider()
 
 

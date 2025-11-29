@@ -30,27 +30,25 @@ The AI coach has three modes:
 - LLM explanation + heuristic actions: when a provider is available, the LLM only generates natural-language explanations; action selection remains heuristic and safe.
 - Fallback: on LLM errors, the coach automatically falls back to heuristic-only mode.
 
-### Enable LiteLLM via environment variables
+### Enable AI Coach via an OpenAI-compatible gateway
 
-By default the project uses a dummy provider (no external calls). To enable LiteLLM with an OpenAI-compatible gateway (for example a oneapi-style proxy), set:
+By default the project uses a dummy provider (no external calls). To enable the AI coach with an OpenAI-compatible gateway (for example a oneapi-style proxy), set:
 
 ```bash
-export AI_PROVIDER=openai                # enable LiteLLM-backed provider
+export AI_PROVIDER=openai                # or 'gateway'; enables OpenAICompatibleProvider
 export OPENAI_API_KEY="your_gateway_key" # key for your OpenAI-compatible gateway
 export OPENAI_API_BASE="https://oneapi.laisky.com/v1"  # or your own /v1 endpoint
 export AI_MODEL_ALIAS="gpt-5.1-chat-latest"            # any allowed model alias
 ```
 
-`AI_PROVIDER=openai` switches the backend to use `LitellmProvider`. The actual models are defined in `poker/ai_coach.py` via `ALLOWED_MODELS` (keys are the human-visible names, values are the model ids passed to LiteLLM). In the current setup these keys are real model names such as:
+`AI_PROVIDER=openai` (or `gateway`) switches the backend to use `OpenAICompatibleProvider`, which talks directly to your OpenAI-compatible `/chat/completions` endpoint. The actual models are defined in `poker/ai_coach.py` via `ALLOWED_MODELS` (keys are the human-visible names, values are the model ids passed to the gateway). In the current setup these keys are real model names such as:
 
 - `claude-4.5-sonnet`
 - `claude-opus-4-5`
 - `moonshotai/kimi-k2-instruct`
-- `kimi-k2-thinking`
-- `gemini-3-pro-preview`
 - `gpt-5.1-chat-latest`
 - `deepseek-chat`
-- `deepseek-reasoner`
+- `grok-4-fast-reasoning`
 
 The backend will pass the chosen model name to your gateway; the gateway is responsible for routing to the underlying provider (Anthropic/DeepSeek/Kimi/Gemini/etc.).
 
