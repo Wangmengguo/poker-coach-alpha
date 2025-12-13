@@ -149,7 +149,7 @@ class OpenAICompatibleProvider:
             resp2 = await responses.create(  # type: ignore[no-untyped-call]
                 model=model,
                 input=prompt,
-                max_output_tokens=512,
+                max_output_tokens=1024,
                 temperature=0.2,
             )
             output_text = getattr(resp2, "output_text", None)
@@ -204,7 +204,7 @@ class OpenAICompatibleProvider:
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
+                max_tokens=1024,
                 temperature=0.2,
             )
 
