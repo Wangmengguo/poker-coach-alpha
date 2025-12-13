@@ -36,6 +36,8 @@ ALLOWED_MODELS: Dict[str, str] = {
     "claude-opus-4-5": "claude-opus-4-5",
     "moonshotai/kimi-k2-instruct": "moonshotai/kimi-k2-instruct",
     "gpt-5.1-chat-latest": "gpt-5.1-chat-latest",
+    "gpt-5.2": "gpt-5.2",
+    "gpt-5.2-pro": "gpt-5.2-pro",
     "deepseek-chat": "deepseek-chat",
     "grok-4-fast-reasoning": "grok-4-fast-reasoning",
 }
@@ -67,6 +69,66 @@ def set_current_model_alias(alias: str) -> bool:
 
 
 class OpenAICompatibleProvider:
+    def _extract_text(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if part is None:
+                    continue
+                if isinstance(part, str):
+                    parts.append(part)
+                    continue
+                if isinstance(part, dict):
+                    t = part.get("text")
+                    if isinstance(t, str):
+                        parts.append(t)
+                        continue
+                    if isinstance(t, dict):
+                        for k in ("value", "text", "content"):
+                            v = t.get(k)
+                            if isinstance(v, str) and v:
+                                parts.append(v)
+                                break
+                        continue
+                    # Some gateways embed text under nested content blocks.
+                    c = part.get("content")
+                    if isinstance(c, str):
+                        parts.append(c)
+                        continue
+                    continue
+
+                # Object-like content parts (OpenAI SDK types / gateway shims)
+                t_obj = getattr(part, "text", None)
+                if isinstance(t_obj, str):
+                    parts.append(t_obj)
+                    continue
+                if t_obj is not None:
+                    v = getattr(t_obj, "value", None)
+                    if isinstance(v, str):
+                        parts.append(v)
+                        continue
+                    v2 = getattr(t_obj, "text", None)
+                    if isinstance(v2, str):
+                        parts.append(v2)
+                        continue
+
+                # Fallback: best-effort stringification (may include the text in repr)
+                try:
+                    s = str(part)
+                    if s and s != "None":
+                        parts.append(s)
+                except Exception:
+                    continue
+            return "".join(parts)
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
     async def generate(self, prompt: str) -> str:
         """Call an OpenAI-compatible /chat/completions endpoint via the OpenAI SDK."""
         # Import locally so environments without the dependency can still import this module.
@@ -78,24 +140,112 @@ class OpenAICompatibleProvider:
 
         alias = get_current_model_alias()
         model = ALLOWED_MODELS.get(alias, alias)
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=256,
-            temperature=0.2,
-        )
+        debug = os.getenv("AI_COACH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
-        choice = resp.choices[0]
-        message = choice.message
-        content = getattr(message, "content", None)
-        if isinstance(content, list):
-            text = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
+        async def _responses_fallback() -> str:
+            responses = getattr(client, "responses", None)
+            if responses is None:
+                return ""
+            resp2 = await responses.create(  # type: ignore[no-untyped-call]
+                model=model,
+                input=prompt,
+                max_output_tokens=512,
+                temperature=0.2,
             )
-        else:
-            text = content
-        return str(text or "").strip()
+            output_text = getattr(resp2, "output_text", None)
+            if isinstance(output_text, str) and output_text.strip():
+                if debug:
+                    print(
+                        "[AI_COACH_DEBUG] responses model="
+                        f"{model} output_text_len={len(output_text)}"
+                    )
+                return output_text.strip()
+
+            # Best-effort fallback for gateways that return a generic output structure.
+            try:
+                output = getattr(resp2, "output", None) or []
+                parts: list[str] = []
+                for item in output:
+                    content = getattr(item, "content", None) or []
+                    for c in content:
+                        t = getattr(c, "text", None)
+                        if isinstance(t, str) and t:
+                            parts.append(t)
+                            continue
+                        if t is not None:
+                            v = getattr(t, "value", None)
+                            if isinstance(v, str) and v:
+                                parts.append(v)
+                                continue
+                        # Dict-like
+                        if isinstance(c, dict):
+                            t2 = c.get("text")
+                            if isinstance(t2, str) and t2:
+                                parts.append(t2)
+                                continue
+                            if isinstance(t2, dict):
+                                v2 = t2.get("value")
+                                if isinstance(v2, str) and v2:
+                                    parts.append(v2)
+                                    continue
+                joined = "".join(parts).strip()
+                if debug:
+                    print(
+                        "[AI_COACH_DEBUG] responses model="
+                        f"{model} output_parts_len={len(parts)} extracted_len={len(joined)}"
+                    )
+                return joined
+            except Exception:
+                if debug:
+                    print(f"[AI_COACH_DEBUG] responses model={model} extract_failed")
+                return ""
+
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.2,
+            )
+
+            choice = resp.choices[0]
+            message = choice.message
+            content = getattr(message, "content", None)
+            text = self._extract_text(content)
+            if not text:
+                # Some gateways expose refusals or alternative fields.
+                refusal = getattr(message, "refusal", None)
+                if isinstance(refusal, str) and refusal:
+                    text = refusal
+            if debug:
+                finish_reason = getattr(choice, "finish_reason", None)
+                content_type = type(content).__name__
+                extracted_len = len(text or "")
+                print(
+                    "[AI_COACH_DEBUG] chat.completions model="
+                    f"{model} finish_reason={finish_reason} content_type={content_type} "
+                    f"extracted_len={extracted_len}"
+                )
+
+            # Some gateways/models (or "reasoning-first" behaviors) can exhaust the token
+            # budget without emitting a final assistant content string, returning ""
+            # with finish_reason=length. If that happens, try Responses API as a fallback.
+            if not str(text or "").strip():
+                retry = await _responses_fallback()
+                if retry.strip():
+                    if debug:
+                        print(
+                            "[AI_COACH_DEBUG] fallback_used=responses "
+                            f"model={model} retry_len={len(retry)}"
+                        )
+                    return retry.strip()
+            return str(text or "").strip()
+        except Exception:
+            # Some OpenAI-compatible gateways/models prefer the newer Responses API.
+            out = await _responses_fallback()
+            if out.strip():
+                return out.strip()
+            raise
 
 
 def _match_action_spec(
@@ -166,25 +316,66 @@ def _parse_llm_json(
       - json.loads it,
       - resolve ids into concrete legal_actions entries.
     """
+    import ast
     import json
+
     if not text:
         return None
     s = text.strip()
-    # Try to locate a JSON object within the text
-    start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    # Try to locate the first balanced {...} object within the text.
+    start = None
+    depth = 0
+    in_str = False
+    esc = False
+    end = None
+    for i, ch in enumerate(s):
+        if start is None:
+            if ch == "{":
+                start = i
+                depth = 1
+                in_str = False
+                esc = False
+            continue
+        if in_str:
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = False
+            continue
+
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if start is None or end is None or end <= start:
         return None
-    candidate = s[start : end + 1]
+
+    candidate = s[start : end + 1].strip()
     try:
-        data = json.loads(candidate)
+        data: Any = json.loads(candidate)
     except Exception:
-        return None
+        # Some models/gateways return python-literal-ish dicts (single quotes, None).
+        try:
+            data = ast.literal_eval(candidate)
+        except Exception:
+            return None
 
     if not isinstance(data, dict):
         return None
 
-    # Resolve ids into concrete actions.
+    # Resolve ids into concrete actions (preferred path).
     rec_action: Optional[Dict[str, Any]] = None
     sec_action: Optional[Dict[str, Any]] = None
 
@@ -205,6 +396,29 @@ def _parse_llm_json(
                 sec_action = legal_actions[idx]
     except Exception:
         sec_action = None
+
+    # Compatibility path: some models return action specs instead of ids, e.g.:
+    # { "recommended_action": {"type": "call", "amount": 2}, ... }
+    def _normalize_action_spec(obj: Any) -> Optional[Dict[str, Any]]:
+        if obj is None:
+            return None
+        if isinstance(obj, str):
+            t = obj.strip()
+            return {"type": t} if t else None
+        if isinstance(obj, dict):
+            return obj
+        return None
+
+    if rec_action is None:
+        rec_spec = _normalize_action_spec(
+            data.get("recommended_action") or data.get("recommended")
+        )
+        if rec_spec is not None:
+            rec_action = _match_action_spec(rec_spec, legal_actions)
+    if sec_action is None:
+        sec_spec = _normalize_action_spec(data.get("secondary_action") or data.get("secondary"))
+        if sec_spec is not None:
+            sec_action = _match_action_spec(sec_spec, legal_actions)
 
     # Confidence
     conf_val = data.get("confidence")
@@ -453,10 +667,23 @@ async def generate_ai_advice(
     if provider is None:
         return select_actions_heuristic(dc, legal_actions)
 
+    if isinstance(provider, DummyProvider):
+        heuristic = select_actions_heuristic(dc, legal_actions)
+        heuristic.reason = "dummy_provider"
+        return heuristic
+
     try:
+        debug = os.getenv("AI_COACH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
         prompt = build_prompt(dc, legal_actions, action_history=action_history)
         raw_text = await provider.generate(prompt)
+        if not raw_text.strip():
+            heuristic = select_actions_heuristic(dc, legal_actions)
+            heuristic.reason = "llm_empty_response"
+            return heuristic
         parsed = _parse_llm_json(raw_text, legal_actions)
+        if debug and parsed is None:
+            preview = raw_text.replace("\n", " ")[:400]
+            print(f"[AI_COACH_DEBUG] llm_raw_preview={preview!r}")
         # If we got a usable mapping from the LLM, prefer it.
         if parsed and parsed.recommended_action:
             # Ensure explanation is not excessively long
@@ -472,9 +699,13 @@ async def generate_ai_advice(
         if parsed and parsed.explanation:
             heuristic.explanation = parsed.explanation[:500]
             heuristic.reason = "llm_explanation_heuristic_actions"
+        else:
+            heuristic.reason = "llm_parse_failed_heuristic_actions"
         return heuristic
     except Exception:
-        return select_actions_heuristic(dc, legal_actions)
+        heuristic = select_actions_heuristic(dc, legal_actions)
+        heuristic.reason = "llm_error_heuristic_actions"
+        return heuristic
 
 
 async def generate_llm_actions_only(

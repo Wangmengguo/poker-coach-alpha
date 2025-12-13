@@ -328,7 +328,7 @@ export class ActionHandler {
 
     this.actionsEl.appendChild(primaryRow);
 
-    // === Raise Section (Single row: [2x][3x][Pot][All-in] | $min[slider]$max | $amt [Raise]) ===
+    // === Raise Section (Presets visible, custom slider collapsible) ===
     if (rangeAction) {
       const min = rangeAction.min ?? 0;
       const max = rangeAction.max ?? min * 10;
@@ -342,41 +342,8 @@ export class ActionHandler {
         const presetsGroup = document.createElement('div');
         presetsGroup.className = 'raise-presets';
 
-        const tableForPresets =
-          this.gameState && typeof this.gameState.getTable === 'function'
-            ? this.gameState.getTable()
-            : null;
-        const isPostflop =
-          tableForPresets &&
-          tableForPresets.street &&
-          tableForPresets.street !== 'preflop';
-
-        // In postflop, keep a few common presets visible and fold the rest
-        // behind a small "More" toggle to avoid an overly long row.
-        let primaryPresets = presets.slice();
-        let extraPresets = [];
-        let allInPreset = null;
-
-        if (isPostflop) {
-          // Separate an explicit All-in preset so it is always visible.
-          const idxAllIn = primaryPresets.findIndex((p) => p.label === 'All-in');
-          if (idxAllIn >= 0) {
-            allInPreset = primaryPresets[idxAllIn];
-            primaryPresets.splice(idxAllIn, 1);
-          }
-
-          const maxPrimaryCount = 3;
-          if (primaryPresets.length > maxPrimaryCount) {
-            extraPresets = primaryPresets.slice(maxPrimaryCount);
-            primaryPresets = primaryPresets.slice(0, maxPrimaryCount);
-          } else {
-            extraPresets = [];
-          }
-        }
-
-        const extraButtons = [];
-
-        const appendPresetBtn = (preset, hidden = false) => {
+        // Preset buttons now directly submit the raise action
+        for (const preset of presets) {
           const btn = document.createElement('button');
           btn.textContent = preset.label;
           btn.className = 'raise-btn raise-preset';
@@ -384,140 +351,114 @@ export class ActionHandler {
             'aria-label',
             `Raise ${preset.label} to ${preset.amount} dollars`,
           );
-          btn.dataset.amount = preset.amount;
-          if (hidden) {
-            btn.style.display = 'none';
-            extraButtons.push(btn);
-          }
-          presetsGroup.appendChild(btn);
-        };
-
-        // Primary presets (always visible)
-        for (const preset of primaryPresets) {
-          appendPresetBtn(preset, false);
-        }
-
-        // All-in is always visible when present (postflop folding case)
-        if (allInPreset) {
-          appendPresetBtn(allInPreset, false);
-        } else if (!isPostflop) {
-          // Preflop: render any remaining presets (including All-in) inline.
-          const remaining = presets.filter(
-            (p) => !primaryPresets.includes(p),
-          );
-          for (const preset of remaining) {
-            appendPresetBtn(preset, false);
-          }
-        }
-
-        // "More" toggle for additional postflop presets
-        if (isPostflop && extraPresets.length > 0) {
-          for (const preset of extraPresets) {
-            appendPresetBtn(preset, true);
-          }
-          const moreBtn = document.createElement('button');
-          moreBtn.textContent = 'More';
-          moreBtn.className = 'raise-btn raise-more';
-          moreBtn.setAttribute('aria-expanded', 'false');
-          moreBtn.onclick = () => {
-            const expanded = moreBtn.getAttribute('aria-expanded') === 'true';
-            const next = !expanded;
-            for (const btn of extraButtons) {
-              btn.style.display = next ? '' : 'none';
-            }
-            moreBtn.textContent = next ? 'Less' : 'More';
-            moreBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+          btn.onclick = () => {
+            this.sendAction({ type: 'raise_to', amount: preset.amount });
           };
-          presetsGroup.appendChild(moreBtn);
+          presetsGroup.appendChild(btn);
         }
+
+        // Add "Custom..." toggle button
+        const customToggleBtn = document.createElement('button');
+        customToggleBtn.textContent = 'Custom...';
+        customToggleBtn.className = 'raise-btn raise-custom-toggle';
+        customToggleBtn.setAttribute('aria-expanded', 'false');
+        customToggleBtn.setAttribute('aria-label', 'Show custom raise amount');
+        presetsGroup.appendChild(customToggleBtn);
 
         raiseSection.appendChild(presetsGroup);
-      }
 
-      // Slider group: $min [slider] $max
-      const sliderGroup = document.createElement('div');
-      sliderGroup.className = 'raise-slider-row';
+        // Custom slider section (initially hidden)
+        const customSection = document.createElement('div');
+        customSection.className = 'raise-custom-section';
+        customSection.style.display = 'none';
 
-      const minLabel = document.createElement('span');
-      minLabel.className = 'raise-bound raise-min';
-      minLabel.textContent = `$${min}`;
+        // Slider group: $min [slider] $max
+        const sliderGroup = document.createElement('div');
+        sliderGroup.className = 'raise-slider-row';
 
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      slider.className = 'raise-slider';
-      slider.min = String(min);
-      slider.max = String(max);
-      slider.value = String(min);
-      slider.step = '1';
-      slider.id = 'raiseSlider';
-      slider.setAttribute('aria-label', 'Raise amount slider');
+        const minLabel = document.createElement('span');
+        minLabel.className = 'raise-bound raise-min';
+        minLabel.textContent = `$${min}`;
 
-      const maxLabel = document.createElement('span');
-      maxLabel.className = 'raise-bound raise-max';
-      maxLabel.textContent = `$${max}`;
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.className = 'raise-slider';
+        slider.min = String(min);
+        slider.max = String(max);
+        slider.value = String(min);
+        slider.step = '1';
+        slider.id = 'raiseSlider';
+        slider.setAttribute('aria-label', 'Raise amount slider');
 
-      sliderGroup.appendChild(minLabel);
-      sliderGroup.appendChild(slider);
-      sliderGroup.appendChild(maxLabel);
-      raiseSection.appendChild(sliderGroup);
+        const maxLabel = document.createElement('span');
+        maxLabel.className = 'raise-bound raise-max';
+        maxLabel.textContent = `$${max}`;
 
-      // Amount display
-      const amountDisplay = document.createElement('span');
-      amountDisplay.className = 'raise-amount-display';
-      amountDisplay.textContent = `$${min}`;
-      raiseSection.appendChild(amountDisplay);
+        sliderGroup.appendChild(minLabel);
+        sliderGroup.appendChild(slider);
+        sliderGroup.appendChild(maxLabel);
+        customSection.appendChild(sliderGroup);
 
-      // Raise submit button
-      const raiseBtn = document.createElement('button');
-      raiseBtn.textContent = 'Raise';
-      raiseBtn.className = 'raise-btn raise-submit';
-      raiseBtn.setAttribute('aria-label', 'Submit raise');
-      raiseSection.appendChild(raiseBtn);
+        // Amount display
+        const amountDisplay = document.createElement('span');
+        amountDisplay.className = 'raise-amount-display';
+        amountDisplay.textContent = `$${min}`;
+        customSection.appendChild(amountDisplay);
 
-      // Update display on slider change
-      const updateDisplay = (value) => {
-        amountDisplay.textContent = `$${value}`;
-        const percent = ((value - min) / (max - min)) * 100;
-        slider.style.setProperty('--fill-percent', `${percent}%`);
-      };
+        // Raise submit button
+        const raiseBtn = document.createElement('button');
+        raiseBtn.textContent = 'Raise';
+        raiseBtn.className = 'raise-btn raise-submit';
+        raiseBtn.setAttribute('aria-label', 'Submit custom raise');
+        customSection.appendChild(raiseBtn);
 
-      slider.addEventListener('input', () => {
-        updateDisplay(parseInt(slider.value, 10));
-      });
+        raiseSection.appendChild(customSection);
 
-      // Preset buttons update slider
-      if (presets.length > 0) {
-        const presetsGroup = raiseSection.querySelector('.raise-presets');
-        presetsGroup.addEventListener('click', (e) => {
-          const btn = e.target.closest('.raise-preset');
-          if (!btn) return;
-          const amount = parseInt(btn.dataset.amount, 10);
-          if (!Number.isNaN(amount)) {
-            slider.value = String(Math.min(Math.max(amount, min), max));
-            updateDisplay(parseInt(slider.value, 10));
+        // Toggle custom section visibility
+        customToggleBtn.onclick = () => {
+          const isExpanded = customToggleBtn.getAttribute('aria-expanded') === 'true';
+          const nextState = !isExpanded;
+          customSection.style.display = nextState ? 'flex' : 'none';
+          customToggleBtn.setAttribute('aria-expanded', String(nextState));
+          customToggleBtn.textContent = nextState ? 'Hide' : 'Custom...';
+          
+          // Focus slider when expanding
+          if (nextState) {
+            setTimeout(() => slider.focus(), 100);
+          }
+        };
+
+        // Update display on slider change
+        const updateDisplay = (value) => {
+          amountDisplay.textContent = `$${value}`;
+          const percent = ((value - min) / (max - min)) * 100;
+          slider.style.setProperty('--fill-percent', `${percent}%`);
+        };
+
+        slider.addEventListener('input', () => {
+          updateDisplay(parseInt(slider.value, 10));
+        });
+
+        // Submit raise action
+        raiseBtn.onclick = () => {
+          const v = parseInt(slider.value, 10);
+          if (!Number.isNaN(v)) {
+            this.sendAction({ type: 'raise_to', amount: v });
+          }
+        };
+
+        // Keyboard: Enter to submit
+        slider.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            raiseBtn.click();
           }
         });
+
+        // Initialize slider fill
+        updateDisplay(min);
       }
 
-      // Submit raise action
-      raiseBtn.onclick = () => {
-        const v = parseInt(slider.value, 10);
-        if (!Number.isNaN(v)) {
-          this.sendAction({ type: 'raise_to', amount: v });
-        }
-      };
-
-      // Keyboard: Enter to submit
-      slider.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          raiseBtn.click();
-        }
-      });
-
       this.actionsEl.appendChild(raiseSection);
-
-      // Initialize slider fill
-      updateDisplay(min);
     }
   }
 

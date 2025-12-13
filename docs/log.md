@@ -175,3 +175,18 @@ Date: 2025-12-13
 - Postflop preset UX compaction:
   - Updated the raise presets rendering in `public/modules/actions.js` so that on postflop streets only a few core presets are shown inline (up to three primary sizes plus `All-in`), and any additional classified presets are hidden behind a `More`/`Less` toggle button that expands or collapses the extra raise buttons in place.
   - Preflop keeps all available presets visible (2.5x/3x/4x or 2x/2.5x/3x plus All-in) to emphasize the limited but meaningful open/3-bet sizing choices commonly used by the coach.
+
+- Frontend raise UI collapsible custom controls:
+  - Refactored raise action section in `public/modules/actions.js` to address UI bloat concerns: preset buttons (`2.5x`, `3x`, `Pot`, `All-in`) now directly submit raise actions on click, while the custom slider + amount display + submit button are collapsed into a `Custom...` toggle.
+  - Default collapsed state shows a single row: `[Fold] [Call $X] [Preset1] [Preset2] [Preset3] [All-in] [Custom...]`.
+  - Clicking `Custom...` expands a secondary section with the slider control (`$min [slider] $max`), real-time amount display, and a `Raise` submit button; button label changes to `Hide` when expanded and auto-focuses the slider for keyboard users.
+  - Updated `public/style.css` with new classes (`.raise-custom-toggle`, `.raise-custom-section`) and a `slideDown` animation; custom section displays as a bordered, semi-transparent panel below the preset row.
+  - Optimized responsive styles for tablet/mobile to maintain compact layout and appropriate touch target sizes (≥40px on touch devices).
+  - Result: reduced action bar from 3–4 rows to 1 row (collapsed) or 2 rows (expanded), significantly improving visual clarity without losing functionality.
+
+- AI Coach model support + gateway robustness:
+  - Extended `poker/ai_coach.py` model whitelist to include `gpt-5.2` and `gpt-5.2-pro` (removed the incorrect `gpt-5.2-chat-latest` alias) and added lightweight tests to ensure aliases are present and switchable.
+  - Hardened LLM output parsing to reduce false fallbacks: extract the first balanced `{...}` object from mixed text/code-fences and accept python-literal-ish dict outputs via `ast.literal_eval` as a backup when strict JSON fails.
+  - Improved fallback diagnostics by replacing the generic `heuristic` reason with explicit reasons (`dummy_provider`, `llm_empty_response`, `llm_parse_failed_heuristic_actions`, `llm_error_heuristic_actions`) so UI payloads reveal why the LLM wasn’t used.
+  - Investigated `gpt-5.2` returning empty `message.content` with `finish_reason=length` and fixed it by increasing `max_tokens` and automatically retrying via the Responses API when chat completions produce an empty content string.
+  - Added an opt-in `AI_COACH_DEBUG=1` mode to print per-request extraction diagnostics (finish_reason, content type/length, and whether Responses fallback was used) to accelerate gateway troubleshooting.

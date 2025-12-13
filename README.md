@@ -47,6 +47,8 @@ export AI_MODEL_ALIAS="gpt-5.1-chat-latest"            # any allowed model alias
 - `claude-opus-4-5`
 - `moonshotai/kimi-k2-instruct`
 - `gpt-5.1-chat-latest`
+- `gpt-5.2`
+- `gpt-5.2-pro`
 - `deepseek-chat`
 - `grok-4-fast-reasoning`
 
