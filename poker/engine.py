@@ -246,6 +246,55 @@ class TableEngine:
         except Exception:
             return False
 
+    def _preflop_raise_candidates(self, idx: int, to_call: int) -> List[int]:
+        """Generate preflop raise-to candidates for a given player index.
+
+        We keep this intentionally simple and robust:
+        - If there has been no voluntary raise yet (max_bet <= bb), we offer
+          a few standard open sizes based on big blind multiples (e.g., 2.5x,
+          3x, 4x).
+        - If facing a raise (max_bet > bb), we offer a small set of 3-bet/4-bet
+          sizes based on multiples of the amount to call.
+        - In all cases we also include an all-in candidate via _max_bet_to.
+        """
+        assert self.state is not None
+        max_bet = max(self.state.bets)
+        bb = self.cfg.bb
+        candidates: List[int] = []
+
+        # Always consider all-in as a candidate
+        try:
+            candidates.append(self._max_bet_to(idx))
+        except Exception:
+            pass
+
+        # Unopened or blinds-only pot: treat as open-raising spot.
+        if max_bet <= bb:
+            # Typical open sizes in live/online 6-max: 2.5x–4x.
+            for mult in (2.5, 3.0, 4.0):
+                try:
+                    total = int(round(bb * mult))
+                    if total > max_bet:
+                        candidates.append(total)
+                except Exception:
+                    continue
+        else:
+            # Facing a raise (3-bet/4-bet scenarios): raise based on to_call.
+            # Use simple multiples of the amount to call on top of current max_bet.
+            base = max_bet
+            # If to_call is zero (rare preflop edge case), fall back to pot-sized bump.
+            if to_call <= 0:
+                to_call = bb
+            for k in (2.0, 2.5, 3.0):
+                try:
+                    total = int(round(base + to_call * k))
+                    if total > max_bet:
+                        candidates.append(total)
+                except Exception:
+                    continue
+
+        return candidates
+
     def legal_actions(self) -> List[Dict]:
         assert self.state is not None
         i = self.state.turn_index
@@ -259,26 +308,36 @@ class TableEngine:
             actions.append({"type": "call", "amount": to_call})
             actions.append({"type": "fold"})
 
-        # Pot-based raise candidates (validate via simulation)
+        # Raise candidates (validate via simulation)
         max_bet = max(self.state.bets)
-        # Compute pot amount; include current pot and bets if available
-        try:
-            pot_amt = int(sum(self.state.pot_amounts))  # type: ignore[attr-defined]
-        except Exception:
-            pot_amt = 0
-        fractions = [1 / 3, 1 / 2, 2 / 3, 1.0, 2.0]
         candidates: List[int] = []
-        for f in fractions:
-            try:
-                target = max_bet + int(round((pot_amt + to_call) * f))
-                candidates.append(target)
-            except Exception:
-                continue
-        # Always consider all-in as a candidate
+
+        # Preflop: use dedicated preflop sizing logic for more natural ranges.
         try:
-            candidates.append(self._max_bet_to(i))
+            street_idx = getattr(self.state, "street_index", None)
         except Exception:
-            pass
+            street_idx = None
+
+        if street_idx == 0:
+            candidates.extend(self._preflop_raise_candidates(i, to_call))
+        else:
+            # Postflop and other streets: pot-based raise candidates.
+            try:
+                pot_amt = int(sum(self.state.pot_amounts))  # type: ignore[attr-defined]
+            except Exception:
+                pot_amt = 0
+            fractions = [1 / 3, 1 / 2, 2 / 3, 1.0, 2.0]
+            for f in fractions:
+                try:
+                    target = max_bet + int(round((pot_amt + to_call) * f))
+                    candidates.append(target)
+                except Exception:
+                    continue
+            # Always consider all-in as a candidate
+            try:
+                candidates.append(self._max_bet_to(i))
+            except Exception:
+                pass
 
         for amt in sorted(set(candidates)):
             if amt <= max_bet:

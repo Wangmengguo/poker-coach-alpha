@@ -74,6 +74,24 @@ curl -X POST http://localhost:8000/settings/ai_model \
 
 The frontend can call the same endpoint to implement a simple model selector (e.g. a dropdown showing `claude-4.5-sonnet`, `deepseek-chat`, etc.). Only the model name travels over the wire; keys and provider-specific configuration stay on the backend.
 
+## Offline LLM vs bot simulation (testing)
+
+When `AI_PROVIDER` is configured to use an OpenAI-compatible gateway and a valid model alias (see above), you can benchmark the coach by running offline simulations with `tools/run_llm_simulation.py`. For example, to run 10 independent 100-hand sessions with different seeds and write per-hand CSVs into `logs/`:
+
+```bash
+for s in 1 2 3 4 5 6 7 8 9 10; do
+  echo "=== Session $s ==="
+  python tools/run_llm_simulation.py \
+    --model-alias gpt-5.1-chat-latest \
+    --num-hands 100 \
+    --seed $s \
+    --llm-timeout-seconds 30 \
+    --csv-output logs
+done
+```
+
+Each run plays `--num-hands` hands with one LLM-controlled seat (via `LlmBot`) against existing bots, prints aggregate stats (hands, net chips, BB/100, LLM failures), and writes a CSV file under `logs/` that you can analyze later.
+
 ## Next
 
 We will implement the TableService around pokerkit, bots, and the WS protocol per PLAN.md.

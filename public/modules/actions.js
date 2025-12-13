@@ -80,51 +80,196 @@ export class ActionHandler {
   }
 
   /**
-   * Build semantic raise presets: 2x, 3x, Pot, All-in
-   * Based on current pot and bet amounts from legal actions
+   * Build semantic raise presets aligned with backend sizing:
+   * - Preflop: BB multiples (open) or vs-raise multiples (3-bet/4-bet).
+   * - Postflop: pot fractions (1/3, 1/2, 2/3, 1x, 2x).
+   * All amounts are taken from legal_actions so they match the coach.
    */
   _buildRaisePresets(legal, rangeAction) {
     if (!rangeAction) return [];
 
-    const min = rangeAction.min ?? 0;
-    const max = rangeAction.max ?? Infinity;
+    const table = this.gameState && typeof this.gameState.getTable === 'function'
+      ? this.gameState.getTable()
+      : null;
+    if (!table) return [];
+
+    const street = table.street || 'preflop';
+
+    // Collect all fixed raise_to actions (with concrete amounts)
+    const fixedRaises = legal
+      .filter((a) => a.type === 'raise_to' && typeof a.amount === 'number')
+      .map((a) => ({ ...a, amount: Number(a.amount) }))
+      .sort((a, b) => a.amount - b.amount);
+
+    if (!fixedRaises.length) return [];
+
+    const betsObj = table.bets || {};
+    const betValsRaw = Object.values(betsObj);
+    const betVals = betValsRaw
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v));
+    const maxBet = betVals.length ? Math.max(...betVals) : 0;
+
+    const callAction = legal.find((a) => a.type === 'call');
+    const toCall =
+      callAction && typeof callAction.amount === 'number'
+        ? Number(callAction.amount)
+        : 0;
+
+    const bb =
+      table.blinds && typeof table.blinds.bb === 'number'
+        ? Number(table.blinds.bb)
+        : 0;
+    const potAmt =
+      typeof table.pot === 'number' && Number.isFinite(table.pot)
+        ? Number(table.pot)
+        : 0;
+
+    const maxBound =
+      typeof rangeAction.max === 'number' && Number.isFinite(rangeAction.max)
+        ? Number(rangeAction.max)
+        : null;
+
     const presets = [];
 
-    // Collect all raise_to with specific amounts to find pot-sized raise
-    const allRaises = legal.filter(
-      (a) => a.type === 'raise_to' && typeof a.amount === 'number'
-    );
-    allRaises.sort((a, b) => a.amount - b.amount);
+    // Helper to avoid duplicate amounts
+    const pushPreset = (amount, label) => {
+      if (!Number.isFinite(amount)) return;
+      if (presets.some((p) => p.amount === amount && p.label === label)) return;
+      presets.push({ amount, label });
+    };
 
-    // Calculate 2x and 3x based on min raise
-    const raise2x = min;
-    const raise3x = Math.round(min * 1.5); // Approximation for 3x the bet
+    // Preflop: BB-multiple logic (open) or vs-raise multiples.
+    if (street === 'preflop') {
+      const isOpenSpot = bb > 0 && maxBet <= bb;
 
-    // Find pot-sized raise (usually around middle of available raises)
-    let potRaise = null;
-    if (allRaises.length > 2) {
-      const midIdx = Math.floor(allRaises.length / 2);
-      potRaise = allRaises[midIdx]?.amount;
+      // Exclude clear all-in candidate from sizing buckets; keep it as dedicated All-in.
+      const nonAllInRaises = fixedRaises.filter((r) => {
+        if (maxBound == null) return true;
+        return Math.abs(r.amount - maxBound) > 1;
+      });
+
+      if (isOpenSpot && bb > 0) {
+        // Open-raise: classify by BB multiples ~ 2.5x / 3x / 4x.
+        const targets = [
+          { label: '2.5x', mult: 2.5 },
+          { label: '3x', mult: 3.0 },
+          { label: '4x', mult: 4.0 },
+        ];
+        const buckets = new Map();
+
+        for (const r of nonAllInRaises) {
+          const amount = r.amount;
+          if (!Number.isFinite(amount)) continue;
+          const mult = amount / bb;
+          if (!Number.isFinite(mult) || mult <= 0) continue;
+          let best = null;
+          for (const t of targets) {
+            const delta = Math.abs(mult - t.mult);
+            if (!best || delta < best.delta) {
+              best = { target: t, delta };
+            }
+          }
+          if (!best) continue;
+          const label = best.target.label;
+          const existing = buckets.get(label);
+          if (!existing || best.delta < existing.delta) {
+            buckets.set(label, { amount, delta: best.delta });
+          }
+        }
+
+        for (const t of targets) {
+          const entry = buckets.get(t.label);
+          if (entry) {
+            pushPreset(entry.amount, t.label);
+          }
+        }
+      } else if (toCall > 0) {
+        // Facing a raise: classify by multiples of the amount to call.
+        const targets = [
+          { label: '2x', mult: 2.0 },
+          { label: '2.5x', mult: 2.5 },
+          { label: '3x', mult: 3.0 },
+        ];
+        const buckets = new Map();
+
+        for (const r of nonAllInRaises) {
+          const amount = r.amount;
+          if (!Number.isFinite(amount)) continue;
+          const kEst = (amount - maxBet) / toCall;
+          if (!Number.isFinite(kEst) || kEst <= 0) continue;
+          let best = null;
+          for (const t of targets) {
+            const delta = Math.abs(kEst - t.mult);
+            if (!best || delta < best.delta) {
+              best = { target: t, delta };
+            }
+          }
+          if (!best) continue;
+          const label = best.target.label;
+          const existing = buckets.get(label);
+          if (!existing || best.delta < existing.delta) {
+            buckets.set(label, { amount, delta: best.delta });
+          }
+        }
+
+        for (const t of targets) {
+          const entry = buckets.get(t.label);
+          if (entry) {
+            pushPreset(entry.amount, t.label);
+          }
+        }
+      }
+    } else {
+      // Postflop: classify by pot fractions (1/3, 1/2, 2/3, 1x, 2x).
+      const denom = potAmt + toCall;
+      const nonAllInRaises = fixedRaises.filter((r) => {
+        if (maxBound == null) return true;
+        return Math.abs(r.amount - maxBound) > 1;
+      });
+
+      if (denom > 0) {
+        const targets = [
+          { label: '1/3 pot', mult: 1 / 3 },
+          { label: '1/2 pot', mult: 1 / 2 },
+          { label: '2/3 pot', mult: 2 / 3 },
+          { label: 'Pot', mult: 1.0 },
+          { label: '2x pot', mult: 2.0 },
+        ];
+        const buckets = new Map();
+
+        for (const r of nonAllInRaises) {
+          const amount = r.amount;
+          if (!Number.isFinite(amount)) continue;
+          const fEst = (amount - maxBet) / denom;
+          if (!Number.isFinite(fEst) || fEst <= 0) continue;
+          let best = null;
+          for (const t of targets) {
+            const delta = Math.abs(fEst - t.mult);
+            if (!best || delta < best.delta) {
+              best = { target: t, delta };
+            }
+          }
+          if (!best) continue;
+          const label = best.target.label;
+          const existing = buckets.get(label);
+          if (!existing || best.delta < existing.delta) {
+            buckets.set(label, { amount, delta: best.delta });
+          }
+        }
+
+        for (const t of targets) {
+          const entry = buckets.get(t.label);
+          if (entry) {
+            pushPreset(entry.amount, t.label);
+          }
+        }
+      }
     }
 
-    // 2x (min raise)
-    if (raise2x >= min && raise2x <= max) {
-      presets.push({ amount: raise2x, label: '2x' });
-    }
-
-    // 3x
-    if (raise3x > raise2x && raise3x <= max) {
-      presets.push({ amount: raise3x, label: '3x' });
-    }
-
-    // Pot (if distinct from 2x/3x)
-    if (potRaise && potRaise > raise3x && potRaise < max) {
-      presets.push({ amount: potRaise, label: 'Pot' });
-    }
-
-    // All-in
-    if (max !== Infinity && max > (potRaise ?? raise3x)) {
-      presets.push({ amount: max, label: 'All-in' });
+    // Always add an explicit All-in button when we have a validated max range.
+    if (maxBound != null) {
+      pushPreset(maxBound, 'All-in');
     }
 
     return presets;
@@ -197,13 +342,93 @@ export class ActionHandler {
         const presetsGroup = document.createElement('div');
         presetsGroup.className = 'raise-presets';
 
-        for (const preset of presets) {
+        const tableForPresets =
+          this.gameState && typeof this.gameState.getTable === 'function'
+            ? this.gameState.getTable()
+            : null;
+        const isPostflop =
+          tableForPresets &&
+          tableForPresets.street &&
+          tableForPresets.street !== 'preflop';
+
+        // In postflop, keep a few common presets visible and fold the rest
+        // behind a small "More" toggle to avoid an overly long row.
+        let primaryPresets = presets.slice();
+        let extraPresets = [];
+        let allInPreset = null;
+
+        if (isPostflop) {
+          // Separate an explicit All-in preset so it is always visible.
+          const idxAllIn = primaryPresets.findIndex((p) => p.label === 'All-in');
+          if (idxAllIn >= 0) {
+            allInPreset = primaryPresets[idxAllIn];
+            primaryPresets.splice(idxAllIn, 1);
+          }
+
+          const maxPrimaryCount = 3;
+          if (primaryPresets.length > maxPrimaryCount) {
+            extraPresets = primaryPresets.slice(maxPrimaryCount);
+            primaryPresets = primaryPresets.slice(0, maxPrimaryCount);
+          } else {
+            extraPresets = [];
+          }
+        }
+
+        const extraButtons = [];
+
+        const appendPresetBtn = (preset, hidden = false) => {
           const btn = document.createElement('button');
           btn.textContent = preset.label;
           btn.className = 'raise-btn raise-preset';
-          btn.setAttribute('aria-label', `Raise ${preset.label} to ${preset.amount} dollars`);
+          btn.setAttribute(
+            'aria-label',
+            `Raise ${preset.label} to ${preset.amount} dollars`,
+          );
           btn.dataset.amount = preset.amount;
+          if (hidden) {
+            btn.style.display = 'none';
+            extraButtons.push(btn);
+          }
           presetsGroup.appendChild(btn);
+        };
+
+        // Primary presets (always visible)
+        for (const preset of primaryPresets) {
+          appendPresetBtn(preset, false);
+        }
+
+        // All-in is always visible when present (postflop folding case)
+        if (allInPreset) {
+          appendPresetBtn(allInPreset, false);
+        } else if (!isPostflop) {
+          // Preflop: render any remaining presets (including All-in) inline.
+          const remaining = presets.filter(
+            (p) => !primaryPresets.includes(p),
+          );
+          for (const preset of remaining) {
+            appendPresetBtn(preset, false);
+          }
+        }
+
+        // "More" toggle for additional postflop presets
+        if (isPostflop && extraPresets.length > 0) {
+          for (const preset of extraPresets) {
+            appendPresetBtn(preset, true);
+          }
+          const moreBtn = document.createElement('button');
+          moreBtn.textContent = 'More';
+          moreBtn.className = 'raise-btn raise-more';
+          moreBtn.setAttribute('aria-expanded', 'false');
+          moreBtn.onclick = () => {
+            const expanded = moreBtn.getAttribute('aria-expanded') === 'true';
+            const next = !expanded;
+            for (const btn of extraButtons) {
+              btn.style.display = next ? '' : 'none';
+            }
+            moreBtn.textContent = next ? 'Less' : 'More';
+            moreBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+          };
+          presetsGroup.appendChild(moreBtn);
         }
 
         raiseSection.appendChild(presetsGroup);

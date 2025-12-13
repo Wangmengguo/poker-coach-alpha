@@ -126,3 +126,52 @@ Date: 2025-11-28
   - Implemented Plan B in `poker/ai_coach.py`: the LLM now returns a JSON object with `recommended`, `secondary`, `confidence`, and `explanation`; `_parse_llm_json` and `_match_action_spec` map these to current `legal_actions`, and the coach prefers LLM-selected actions when they are legal, falling back to heuristic actions otherwise.
   - Added `players_count` to the LLM context so the model can distinguish heads-up from multiway pots in a lightweight way.
   - Implemented a model selector UI in `public/index.html` / `public/style.css` / `public/app.js`: a compact “Model” pill with a `<select>` populated from `/settings/ai_model`, allowing runtime switching between configured models (e.g., `claude-4.5-sonnet`, `deepseek-chat`, `gpt-5.1-chat-latest`) with changes logged in the Game Log.
+
+Date: 2025-12-06
+
+- AI model configuration and tooling updates:
+  - Simplified and refreshed `ALLOWED_MODELS` in `poker/ai_coach.py` to reflect the current OpenAI-compatible gateway setup (e.g., `claude-4.5-sonnet`, `claude-opus-4-5`, `moonshotai/kimi-k2-instruct`, `gpt-5.1-chat-latest`, `deepseek-chat`, `grok-4-fast-reasoning`) and removed unstable/unavailable entries.
+  - Renamed the LiteLLM-era test script to `test_ai_models.py` and updated messaging so it validates direct gateway calls (`AI_PROVIDER=openai/gateway` + `OPENAI_API_BASE/OPENAI_API_URL`) against the current model whitelist.
+- LLM coach prompt and protocol redesign:
+  - Switched the coach protocol to an id-based action selection schema: `build_prompt(...)` now serializes `legal_actions` as a JSON array with explicit integer `id`s and type/amount/min/max metadata, and the model is instructed to respond with `recommended_id` / `secondary_id` instead of hand-crafted `{type, amount}` specs.
+  - Simplified `_parse_llm_json(...)` to resolve `recommended_id` and `secondary_id` directly into `legal_actions[idx]`, removing the older type/amount matching path and making the mapping between LLM output and engine actions deterministic and robust.
+  - Enriched the prompt with clearer strategy framing (6-max 1/2 cash game, 50–200bb, long-term EV focus) and tightened output rules (JSON-only, 1–2 sentence explanation, secondary action used as a more conservative backup line).
+  - Added an equity edge summary to `_format_core_metrics(...)`: when both `hand_strength_pct` and `required_equity_pct` are available, the context string now includes `Equity edge vs pot odds: +X%/-Y%` so the model can see at a glance how far above/below break-even the current spot is.
+- LLM-only advice path and bot wrapper:
+  - Added `generate_llm_actions_only(...)` to `poker/ai_coach.py`, a variant of `generate_ai_advice` that:
+    - Calls the provider with a per-decision timeout (configurable, default ~5s) via `asyncio.wait_for`.
+    - Parses the JSON using the new id-based schema.
+    - On timeout, network/API error, or parse failure, returns an `AiAdvice` with `recommended_action=None` and a descriptive `reason` (`llm_timeout`, `llm_error`, `llm_parse_failed`) without falling back to heuristic actions, leaving fallback behavior to callers.
+  - Introduced `poker/llm_bot.py` with `LlmBot`, an LLM-driven bot wrapper that:
+    - Uses `compose_analysis(...)` to build a `DecisionContext` for the acting seat.
+    - Calls `generate_llm_actions_only(...)` to obtain LLM advice and records whether the decision was LLM-driven or fell back.
+    - Applies a safe fallback when LLM output is unusable (prefer `check` when `to_call == 0`, else `fold`, else `call`, else the first legal action), returning a structured `LlmDecisionResult` with `llm_failed` flag and optional `AiAdvice`.
+- Offline LLM vs bot simulation tooling:
+  - Added `tools/run_llm_simulation.py`, a CLI script to run offline simulations where a single LLM-controlled seat (via `LlmBot`) plays against existing `EquityBot` opponents using the real `TableEngine`:
+    - Arguments: `--model-alias`, `--num-hands`, `--seed`, `--llm-timeout-seconds`, `--csv-output`.
+    - Ensures the repo’s local `poker` package is used (prepends project root to `sys.path`) and refuses to run when `get_ai_provider_from_env()` resolves to `DummyProvider`.
+    - For each hand, repeatedly calls `engine.advance(human_seat)` and:
+      - Injects LLM decisions when it is the human/LLM seat’s turn.
+      - Uses `EquityBot` for all other bot seats.
+      - Tracks per-hand hero deltas from `hand_end.results` and counts per-hand LLM failures.
+    - Prints per-hand progress (`[SIM] Hand X/Y started/finished: delta=..., llm_failures=...`) and session-level metrics (hands played, total net chips, BB/100, total LLM decision failures).
+    - Optionally writes per-hand results (`hand_index`, `net_chips`, `llm_failures`) to a CSV file under a `logs/` directory for later analysis.
+- Preflop raise sizing and legal action improvements:
+  - Refactored `TableEngine.legal_actions()` to introduce a dedicated `_preflop_raise_candidates(...)` path:
+    - In unopened or blinds-only pots (preflop with `max_bet <= bb`), generate standard open sizes based on big blind multiples (e.g., ~2.5x, 3x, 4x) plus an all-in candidate, validating each via `_try_raise_to`.
+    - When facing a preflop raise (`max_bet > bb`), generate a small set of 3-bet/4-bet candidates as multiples of the amount to call on top of the current max bet (e.g., ~2x, 2.5x, 3x of `to_call`), plus all-in.
+  - Kept postflop raise sizing on the existing pot-fraction basis (1/3, 1/2, 2/3, 1x, 2x pot plus all-in), ensuring that:
+    - Preflop `legal_actions` now expose more natural raise options (2.5x/3x/4x opens and simple 3-bet sizes) alongside a validated `{"type": "raise_to", "min": ..., "max": ...}` range.
+    - The LLM (and any future UI) can choose between realistic preflop raise sizes while still having access to a conservative continuous range for fine-tuning.
+
+Date: 2025-12-13
+
+- Frontend raise presets aligned with backend / coach sizing:
+  - Rewrote `_buildRaisePresets` in `public/modules/actions.js` to derive all preset raise amounts directly from `legal_actions` and classify them using the same sizing logic as the engine:
+    - Preflop open spots (unraised pots with `max_bet <= bb`) now map fixed `raise_to.amount` values to BB-multiple labels (`2.5x`, `3x`, `4x`) based on `amount / bb`, picking the closest candidate for each label.
+    - Preflop vs-raise spots (`max_bet > bb`) map fixed `raise_to.amount` values to multiples of the amount to call (`2x`, `2.5x`, `3x`) via `(amount - max_bet) / to_call`, again choosing the closest candidate per label.
+    - Postflop raise candidates are classified by pot fractions (`1/3 pot`, `1/2 pot`, `2/3 pot`, `Pot`, `2x pot`) using `(amount - max_bet) / (pot + to_call)`, so UI labels match the coach’s underlying 1/3–2x pot sizing family.
+  - Always surface an explicit `All-in` preset based on the validated `{"type": "raise_to", "min": ..., "max": ...}` range (`max` becomes the All-in amount), while excluding that amount from the other preset buckets.
+- Postflop preset UX compaction:
+  - Updated the raise presets rendering in `public/modules/actions.js` so that on postflop streets only a few core presets are shown inline (up to three primary sizes plus `All-in`), and any additional classified presets are hidden behind a `More`/`Less` toggle button that expands or collapses the extra raise buttons in place.
+  - Preflop keeps all available presets visible (2.5x/3x/4x or 2x/2.5x/3x plus All-in) to emphasize the limited but meaningful open/3-bet sizing choices commonly used by the coach.

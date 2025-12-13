@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
+import asyncio
 
 from .analysis.models import DecisionContext
 
@@ -153,12 +154,17 @@ def _parse_llm_json(
     text: str,
     legal_actions: List[Dict[str, Any]],
 ) -> Optional[AiAdvice]:
-    """Best-effort parse of LLM JSON output into AiAdvice.
+    """Best-effort parse of LLM JSON output into AiAdvice using id-based selection.
 
-    The model is instructed to return a single JSON object, but we defensively:
-    - extract the first {...} block,
-    - attempt json.loads,
-    - map recommended/secondary via _match_action_spec.
+    The model is instructed to return a single JSON object with:
+      - recommended_id: int
+      - secondary_id: int or null
+      - confidence: float (0..1)
+      - explanation: str
+    We:
+      - extract the first {...} block,
+      - json.loads it,
+      - resolve ids into concrete legal_actions entries.
     """
     import json
     if not text:
@@ -178,10 +184,27 @@ def _parse_llm_json(
     if not isinstance(data, dict):
         return None
 
-    rec_spec = data.get("recommended")
-    sec_spec = data.get("secondary") or data.get("secondary_action")
-    rec_action = _match_action_spec(rec_spec or {}, legal_actions)
-    sec_action = _match_action_spec(sec_spec or {}, legal_actions) if sec_spec else None
+    # Resolve ids into concrete actions.
+    rec_action: Optional[Dict[str, Any]] = None
+    sec_action: Optional[Dict[str, Any]] = None
+
+    rec_id = data.get("recommended_id")
+    try:
+        if rec_id is not None:
+            idx = int(rec_id)
+            if 0 <= idx < len(legal_actions):
+                rec_action = legal_actions[idx]
+    except Exception:
+        rec_action = None
+
+    sec_id = data.get("secondary_id")
+    try:
+        if sec_id is not None:
+            idx = int(sec_id)
+            if 0 <= idx < len(legal_actions):
+                sec_action = legal_actions[idx]
+    except Exception:
+        sec_action = None
 
     # Confidence
     conf_val = data.get("confidence")
@@ -227,6 +250,15 @@ def _format_core_metrics(dc: DecisionContext) -> str:
         parts.append(f"Hand: {dc.hand_label}")
     if dc.hand_strength_pct is not None:
         parts.append(f"Hand strength: ~{round(dc.hand_strength_pct)}%")
+        # If both hand strength and required equity are available, provide a simple edge summary.
+        if dc.required_equity_pct is not None:
+            try:
+                edge = float(dc.hand_strength_pct) - float(dc.required_equity_pct)
+                edge_rounded = int(round(edge))
+                sign = "+" if edge_rounded >= 0 else ""
+                parts.append(f"Equity edge vs pot odds: {sign}{edge_rounded}%")
+            except Exception:
+                pass
     if dc.outs:
         parts.append(f"Outs: {dc.outs}")
     # Cards (hero + board); we only include hero's own hole cards and public board,
@@ -267,9 +299,26 @@ def build_prompt(
     legal_actions: List[Dict[str, Any]],
     action_history: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
+    import json
+
     metrics = _format_core_metrics(dc)
-    actions_desc = []
-    for a in legal_actions:
+
+    # Attach stable integer ids to each legal action so the model can
+    # select by id, avoiding fragile type/amount string matching.
+    actions_with_ids: List[Dict[str, Any]] = []
+    for idx, a in enumerate(legal_actions):
+        entry: Dict[str, Any] = {"id": idx, "type": a.get("type")}
+        if "amount" in a and a.get("amount") is not None:
+            entry["amount"] = int(a.get("amount"))  # type: ignore[arg-type]
+        if "min" in a and a.get("min") is not None:
+            entry["min"] = int(a.get("min"))  # type: ignore[arg-type]
+        if "max" in a and a.get("max") is not None:
+            entry["max"] = int(a.get("max"))  # type: ignore[arg-type]
+        actions_with_ids.append(entry)
+
+    # Short human-readable summary (type/amount) for quick inspection.
+    actions_desc: List[str] = []
+    for a in actions_with_ids:
         t = a.get("type")
         amt = a.get("amount")
         if t in ("call", "raise_to") and amt is not None:
@@ -277,25 +326,36 @@ def build_prompt(
         else:
             actions_desc.append(str(t))
     actions_text = ", ".join(actions_desc)
+
+    actions_json = json.dumps(actions_with_ids, ensure_ascii=False)
     history_text = _summarize_action_history(action_history)
+
     return (
-        "You are a poker coach for No-Limit Hold'em.\n"
+        "You are a no-limit Texas Hold'em strategy coach playing a 6-max online cash game "
+        "(blinds 1/2, effective stacks usually 50–200bb).\n"
+        "You see only HERO's private cards and the public board; you never see opponents' hole cards.\n"
         "You will be given the current situation for the HERO seat and a list of legal actions.\n"
-        "Choose ONE recommended action and, optionally, ONE secondary action from the legal list only.\n"
+        "Legal actions are provided as a JSON array where each item has an integer 'id', a 'type', and\n"
+        "optional numeric fields such as 'amount', 'min', and 'max'. You must choose from these ids only.\n"
         "Respond STRICTLY as a single JSON object with the following shape and no extra text:\n"
         "{\n"
-        '  \"recommended\": {\"type\": \"call\" | \"fold\" | \"check\" | \"raise_to\", \"amount\": <int optional for call/raise>},\n'
-        '  \"secondary\": {\"type\": \"call\" | \"fold\" | \"check\" | \"raise_to\", \"amount\": <int optional>},\n'
+        '  \"recommended_id\": <int id of the recommended action>,\n'
+        '  \"secondary_id\": <int id of the secondary action or null>,\n'
         '  \"confidence\": <float between 0 and 1>,\n'
-        '  \"explanation\": \"short natural-language explanation\"\n'
+        '  \"explanation\": \"short natural-language explanation (1–2 sentences)\"\n'
         "}\n"
         "Rules:\n"
-        "- Only use actions that appear in the legal list below.\n"
-        "- For raise_to and call, the amount must match one of the legal options or lie within a legal min/max range.\n"
-        "- If you are unsure, you may set secondary to null.\n"
+        "- Only use action ids that appear in the legal actions JSON below.\n"
+        "- Do NOT invent new actions or amounts outside the legal list.\n"
+        "- Treat recommended_id as the action you would actually take for HERO.\n"
+        "- Use secondary_id for a reasonable backup plan (usually a more conservative or lower-variance line).\n"
+        "- Think in terms of long-term EV, not short-term gambles: avoid huge overbets or spewy calls "
+        "when equity vs pot odds is clearly poor.\n"
+        "- If you are unsure, you may set secondary_id to null.\n"
         "- Do NOT include any commentary outside the JSON.\n\n"
         f"Context: {metrics}\n"
-        f"Legal actions: {actions_text}\n"
+        f"Legal actions (summary): {actions_text}\n"
+        f"Legal actions (JSON with ids): {actions_json}\n"
         f"Recent action history: {history_text}\n"
     )
 
@@ -415,3 +475,75 @@ async def generate_ai_advice(
         return heuristic
     except Exception:
         return select_actions_heuristic(dc, legal_actions)
+
+
+async def generate_llm_actions_only(
+    dc: DecisionContext,
+    legal_actions: List[Dict[str, Any]],
+    provider: AiProvider,
+    action_history: Optional[List[Dict[str, Any]]] = None,
+    llm_timeout_seconds: float = 5.0,
+) -> AiAdvice:
+    """LLM-only action selection for simulation / bot use.
+
+    Differences from generate_ai_advice:
+    - Always attempts to use the LLM's recommended actions.
+    - Does NOT fall back to heuristic actions on failure.
+    - On timeout / errors / parse failure, returns AiAdvice with
+      recommended_action=None and a descriptive reason; the caller
+      (e.g. LlmBot) is responsible for choosing a safe fallback action.
+    """
+    if not legal_actions:
+        return AiAdvice(
+            recommended_action=None,
+            secondary_action=None,
+            confidence=None,
+            explanation=None,
+            reason="no_legal_actions",
+        )
+
+    try:
+        prompt = build_prompt(dc, legal_actions, action_history=action_history)
+
+        async def _call_provider() -> str:
+            return await provider.generate(prompt)
+
+        raw_text = await asyncio.wait_for(
+            _call_provider(),
+            timeout=max(0.1, float(llm_timeout_seconds)),
+        )
+    except asyncio.TimeoutError:
+        return AiAdvice(
+            recommended_action=None,
+            secondary_action=None,
+            confidence=None,
+            explanation=None,
+            reason="llm_timeout",
+        )
+    except Exception:
+        return AiAdvice(
+            recommended_action=None,
+            secondary_action=None,
+            confidence=None,
+            explanation=None,
+            reason="llm_error",
+        )
+
+    parsed = _parse_llm_json(raw_text, legal_actions)
+    if not parsed or not parsed.recommended_action:
+        # Preserve any explanation, but signal unusable actions
+        explanation = parsed.explanation if parsed and parsed.explanation else None
+        return AiAdvice(
+            recommended_action=None,
+            secondary_action=None,
+            confidence=None,
+            explanation=explanation,
+            reason="llm_parse_failed",
+        )
+
+    # Clip explanation length and ensure confidence has a sensible default
+    if parsed.explanation:
+        parsed.explanation = parsed.explanation[:500]
+    if parsed.confidence is None:
+        parsed.confidence = 0.7
+    return parsed
