@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 import asyncio
+from contextlib import asynccontextmanager
 
 from .analysis.models import DecisionContext
 
@@ -44,6 +45,25 @@ ALLOWED_MODELS: Dict[str, str] = {
 
 _DEFAULT_ALIAS = "gpt-5.1-chat-latest"
 _current_model_alias: str = os.getenv("AI_MODEL_ALIAS", _DEFAULT_ALIAS)
+_model_alias_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def use_model_alias(alias: Optional[str]):
+    """Temporarily set the process-wide model alias in a concurrency-safe way.
+
+    This allows per-client model selection without changing the AiProvider interface.
+    The lock serializes LLM calls that depend on the global alias.
+    """
+    global _current_model_alias
+    async with _model_alias_lock:
+        prev = _current_model_alias
+        if alias and alias in ALLOWED_MODELS:
+            _current_model_alias = alias
+        try:
+            yield
+        finally:
+            _current_model_alias = prev
 
 
 def get_allowed_model_aliases() -> List[str]:

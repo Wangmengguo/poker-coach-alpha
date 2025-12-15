@@ -45,7 +45,8 @@ export class Renderer {
         posEl: playerInfo?.querySelector('.player-pos'),
         stackEl: playerInfo?.querySelector('.player-stack'),
         cardsEl: playerInfo?.querySelector('.player-cards'),
-        betEl: playerInfo?.querySelector('.player-bet'),
+        // Bet is positioned as a separate element near the table edge (outside player-info)
+        betEl: container.querySelector('.player-bet'),
       };
     }
 

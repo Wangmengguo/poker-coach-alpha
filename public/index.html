@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Poker Coach Alpha</title>
-    <link rel="stylesheet" href="/public/style.css?v=12" />
+    <link rel="stylesheet" href="/public/style.css?v=13" />
   </head>
   <body>
     <div id="srAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -18,17 +18,35 @@
         </div>
       </header>
       
-      <div class="controls">
-        <button id="reconnectBtn" style="display: none;" aria-label="Reconnect to server">Reconnect</button>
-        <div class="model-selector">
-          <span class="model-label">Model</span>
-          <select id="modelSelect" aria-label="Select AI model"></select>
-        </div>
-        <button id="audioToggleBtn" class="audio-toggle" aria-label="Toggle sound effects" title="Sound effects">🔊</button>
-        <button id="bgmToggleBtn" class="bgm-toggle" aria-label="Toggle background music" title="Background music">🎵</button>
-        <button id="speedToggleBtn" class="speed-toggle" aria-label="Animation speed: Normal" title="Animation speed">🎯</button>
-        <button id="skipQueueBtn" class="skip-queue" aria-label="Skip animations" title="Skip pending animations">⏭️</button>
-        <span id="queueIndicator" class="queue-indicator" style="display: none;" aria-live="polite"></span>
+        <div class="controls">
+          <button id="reconnectBtn" style="display: none;" aria-label="Reconnect to server">Reconnect</button>
+          <div class="model-selector">
+            <span class="model-label">Model</span>
+            <select id="modelSelect" aria-label="Select AI model"></select>
+          </div>
+          <div class="llm-controls" aria-label="LLM controls">
+            <label class="llm-toggle" title="Enable automatic LLM calls for AI Coach (costs money)">
+              <input id="llmToggle" type="checkbox" aria-label="Toggle Auto LLM" />
+              <span class="llm-toggle__track" aria-hidden="true">
+                <span class="llm-toggle__thumb" aria-hidden="true"></span>
+              </span>
+              <span class="llm-toggle__label">Auto LLM</span>
+            </label>
+            <button
+              id="askLlmBtn"
+              class="ask-llm-btn"
+              aria-label="Request one LLM advice"
+              title="Request one LLM advice (one paid call)"
+              type="button"
+            >
+              Ask once
+            </button>
+          </div>
+          <button id="audioToggleBtn" class="audio-toggle" aria-label="Toggle sound effects" title="Sound effects">🔊</button>
+          <button id="bgmToggleBtn" class="bgm-toggle" aria-label="Toggle background music" title="Background music">🎵</button>
+          <button id="speedToggleBtn" class="speed-toggle" aria-label="Animation speed: Normal" title="Animation speed">🎯</button>
+          <button id="skipQueueBtn" class="skip-queue" aria-label="Skip animations" title="Skip pending animations">⏭️</button>
+          <span id="queueIndicator" class="queue-indicator" style="display: none;" aria-live="polite"></span>
       </div>
       
       <div class="poker-table">
@@ -47,8 +65,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
           <div class="seat seat-2" data-seat="2">
             <div class="player-info">
@@ -56,8 +74,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
           <div class="seat seat-3" data-seat="3">
             <div class="player-info">
@@ -65,8 +83,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
           <div class="seat seat-4" data-seat="4">
             <div class="player-info">
@@ -74,8 +92,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
           <div class="seat seat-5" data-seat="5">
             <div class="player-info">
@@ -83,8 +101,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
           <div class="seat seat-6" data-seat="6">
             <div class="player-info">
@@ -92,8 +110,8 @@
               <div class="player-pos"></div>
               <div class="player-stack">$0</div>
               <div class="player-cards"></div>
-              <div class="player-bet" aria-label="current bet"></div>
             </div>
+            <div class="player-bet" aria-label="current bet"></div>
           </div>
         </div>
       </div>
@@ -158,6 +176,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="/public/app.js?v=12"></script>
+    <script type="module" src="/public/app.js?v=13"></script>
   </body>
 </html>

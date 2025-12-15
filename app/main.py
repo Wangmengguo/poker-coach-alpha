@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 import asyncio
+from dataclasses import dataclass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,9 @@ from poker.ai_coach import (
     get_allowed_model_aliases,
     get_current_model_alias,
     set_current_model_alias,
+    select_actions_heuristic,
+    DummyProvider,
+    use_model_alias,
 )
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -40,18 +44,31 @@ if PUBLIC_DIR.exists():
     app.mount("/public", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="public")
 
 
+@dataclass
+class ClientSettings:
+    llm_enabled: bool = False
+    model_alias: str = ""
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active_connections: Dict[str, Set[WebSocket]] = {}
+        self._settings: Dict[WebSocket, ClientSettings] = {}
 
     async def connect(self, table_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.setdefault(table_id, set()).add(websocket)
+        # Per-browser defaults: LLM off by default, even if server has a key configured.
+        self._settings[websocket] = ClientSettings(
+            llm_enabled=False,
+            model_alias=get_current_model_alias(),
+        )
 
     def disconnect(self, table_id: str, websocket: WebSocket):
         conns = self.active_connections.get(table_id)
         if conns and websocket in conns:
             conns.remove(websocket)
+        self._settings.pop(websocket, None)
 
     async def broadcast(self, table_id: str, message: dict):
         for ws in list(self.active_connections.get(table_id, [])):
@@ -60,6 +77,33 @@ class ConnectionManager:
             except Exception:
                 # Drop broken connections silently for now
                 self.disconnect(table_id, ws)
+
+    async def send(self, websocket: WebSocket, message: dict) -> None:
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            # Best-effort: if a send fails, try to remove from all tables.
+            for tid, conns in list(self.active_connections.items()):
+                if websocket in conns:
+                    self.disconnect(tid, websocket)
+
+    def get_settings(self, websocket: WebSocket) -> ClientSettings:
+        return self._settings.get(websocket, ClientSettings())
+
+    def update_settings(
+        self,
+        websocket: WebSocket,
+        *,
+        llm_enabled: Optional[bool] = None,
+        model_alias: Optional[str] = None,
+    ) -> ClientSettings:
+        cur = self.get_settings(websocket)
+        if llm_enabled is not None:
+            cur.llm_enabled = bool(llm_enabled)
+        if model_alias is not None and model_alias in set(get_allowed_model_aliases()):
+            cur.model_alias = model_alias
+        self._settings[websocket] = cur
+        return cur
 
 
 manager = ConnectionManager()
@@ -77,6 +121,11 @@ _ai_provider = get_ai_provider_from_env()
 
 class AiModelAliasBody(BaseModel):
     model_alias: str
+
+
+class AiAdviceRequestBody(BaseModel):
+    seat: int = 1
+    model_alias: Optional[str] = None
 
 
 async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
@@ -102,20 +151,35 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
         )
         legal_actions = engine.legal_actions()
         history = getattr(engine, "action_history", None)
-        advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
-        msg = {
-            "type": "ai_advice",
-            "seq": engine.next_sequence(),
-            "to_act": seat,
-            "advice": {
-                "recommended_action": advice.recommended_action,
-                "secondary_action": advice.secondary_action,
-                "confidence": advice.confidence,
-                "explanation": advice.explanation,
-                "reason": advice.reason,
-            },
-        }
-        await manager.broadcast(table_id, msg)
+        conns = list(manager.active_connections.get(table_id, []))
+        for ws in conns:
+            settings = manager.get_settings(ws)
+            advice = None
+            # Only call the LLM if this browser explicitly enabled it.
+            if settings.llm_enabled and not isinstance(_ai_provider, DummyProvider):
+                async with use_model_alias(settings.model_alias):
+                    advice = await generate_ai_advice(
+                        dc, legal_actions, _ai_provider, history
+                    )
+            else:
+                advice = select_actions_heuristic(dc, legal_actions)
+                if not settings.llm_enabled:
+                    advice.reason = "client_disabled_llm"
+                elif isinstance(_ai_provider, DummyProvider):
+                    advice.reason = "dummy_provider"
+            msg = {
+                "type": "ai_advice",
+                "seq": engine.next_sequence(),
+                "to_act": seat,
+                "advice": {
+                    "recommended_action": advice.recommended_action,
+                    "secondary_action": advice.secondary_action,
+                    "confidence": advice.confidence,
+                    "explanation": advice.explanation,
+                    "reason": advice.reason,
+                },
+            }
+            await manager.send(ws, msg)
     except Exception:
         try:
             msg = {
@@ -284,6 +348,9 @@ def get_ai_model_settings():
     return {
         "model_alias": get_current_model_alias(),
         "allowed": get_allowed_model_aliases(),
+        "llm_available": not isinstance(_ai_provider, DummyProvider),
+        # Per-browser default is OFF; this is informational only for the UI.
+        "default_llm_enabled": False,
     }
 
 
@@ -302,6 +369,62 @@ def join_table(table_id: str):
         return JSONResponse(status_code=404, content={"error": "table not found"})
     # MVP: fixed human seat 1
     return {"player_id": "human", "seat": 1}
+
+
+@app.post("/tables/{table_id}/ai_advice/llm")
+async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
+    engine = _engines.get(table_id)
+    if not engine or engine.state is None:
+        return JSONResponse(status_code=404, content={"error": "table not found"})
+    if isinstance(_ai_provider, DummyProvider):
+        return JSONResponse(status_code=400, content={"error": "llm_not_configured"})
+
+    seat = int(body.seat or 1)
+    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+    if idx is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_seat"})
+
+    try:
+        positions_map = None
+        try:
+            positions_map = engine._positions_map()  # type: ignore[attr-defined]
+        except Exception:
+            positions_map = None
+        dc, _payload = compose_analysis(
+            engine.state,
+            idx,
+            seat,
+            session_stats=getattr(engine, "session_stats", None),
+            positions_map=positions_map,
+            include_hand_strength=False,
+        )
+        legal_actions = engine.legal_actions()
+        history = getattr(engine, "action_history", None)
+        alias = body.model_alias
+        if alias is not None and alias not in set(get_allowed_model_aliases()):
+            return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
+
+        async with use_model_alias(alias):
+            advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
+        return {
+            "type": "ai_advice",
+            "seq": engine.next_sequence(),
+            "to_act": seat,
+            "advice": {
+                "recommended_action": advice.recommended_action,
+                "secondary_action": advice.secondary_action,
+                "confidence": advice.confidence,
+                "explanation": advice.explanation,
+                "reason": advice.reason,
+            },
+        }
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "llm_request_failed"})
+
+
+async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
+    asyncio.create_task(_broadcast_hand_strength(table_id, seat_act))
+    asyncio.create_task(_broadcast_ai_advice(table_id, seat_act))
 
 
 @app.post("/tables/{table_id}/start")
@@ -324,8 +447,7 @@ def start_session(table_id: str):
             anyio.from_thread.run(manager.broadcast, table_id, m)
             # After broadcasting a prompt, compute hand strength asynchronously
             if isinstance(m, dict) and m.get("type") == "prompt":
-                anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
-                anyio.from_thread.run(_broadcast_ai_advice, table_id, m.get("to_act", 1))
+                anyio.from_thread.run(_schedule_prompt_tasks, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -350,8 +472,7 @@ def next_hand(table_id: str):
 
             anyio.from_thread.run(manager.broadcast, table_id, m)
             if isinstance(m, dict) and m.get("type") == "prompt":
-                anyio.from_thread.run(_broadcast_hand_strength, table_id, m.get("to_act", 1))
-                anyio.from_thread.run(_broadcast_ai_advice, table_id, m.get("to_act", 1))
+                anyio.from_thread.run(_schedule_prompt_tasks, table_id, m.get("to_act", 1))
         except Exception:
             pass
     return {"hand_id": f"h_{engine.hand_index:05d}"}
@@ -400,13 +521,34 @@ async def ws_table(websocket: WebSocket, table_id: str):
                 if idx is not None:
                     seat_act = engine._state_index_to_seat(idx)
                     if seat_act == 1:
-                        asyncio.create_task(_broadcast_hand_strength(table_id, seat_act))
-                        asyncio.create_task(_broadcast_ai_advice(table_id, seat_act))
+                        asyncio.create_task(_schedule_prompt_tasks(table_id, seat_act))
             except Exception:
                 pass
         # Main loop: receive client actions and advance engine
         while True:
             data = await websocket.receive_json()
+            if data.get("type") == "client_settings":
+                llm_enabled = data.get("llm_enabled")
+                model_alias = data.get("model_alias")
+                if model_alias is not None and model_alias not in set(get_allowed_model_aliases()):
+                    await websocket.send_json(
+                        {"type": "client_settings_ack", "error": "invalid_model_alias"}
+                    )
+                    continue
+                new_settings = manager.update_settings(
+                    websocket,
+                    llm_enabled=bool(llm_enabled) if llm_enabled is not None else None,
+                    model_alias=str(model_alias) if model_alias is not None else None,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "client_settings_ack",
+                        "llm_enabled": bool(new_settings.llm_enabled),
+                        "model_alias": new_settings.model_alias,
+                        "llm_available": not isinstance(_ai_provider, DummyProvider),
+                    }
+                )
+                continue
             if data.get("type") == "action":
                 # Apply and advance
                 engine = _engines.get(table_id)
@@ -495,8 +637,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     await manager.broadcast(table_id, m)
                     if isinstance(m, dict) and m.get("type") == "prompt":
                         # Schedule async hand-strength compute without blocking UI
-                        asyncio.create_task(_broadcast_hand_strength(table_id, m.get("to_act", 1)))
-                        asyncio.create_task(_broadcast_ai_advice(table_id, m.get("to_act", 1)))
+                        asyncio.create_task(_schedule_prompt_tasks(table_id, m.get("to_act", 1)))
             else:
                 await websocket.send_json({"type": "ack", "received": data})
     except WebSocketDisconnect:

@@ -15,44 +15,203 @@ const analysisDrawer = new AnalysisDrawer(renderer, gameState);
 // Track whether we've already auto-joined the default table
 let hasAutoJoined = false;
 
+const STORAGE_KEYS = {
+  llmEnabled: 'pokerCoach.llmEnabled',
+  modelAlias: 'pokerCoach.modelAlias',
+};
+
+function _setAskButtonState(btn, state, label) {
+  if (!btn) return;
+  btn.dataset.state = state || 'idle';
+  if (typeof label === 'string') {
+    btn.textContent = label;
+  }
+}
+
+function _getStoredBool(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null || raw === undefined) return fallback;
+    return raw === '1' || raw === 'true';
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function _setStoredBool(key, val) {
+  try {
+    localStorage.setItem(key, val ? '1' : '0');
+  } catch (e) {
+    // ignore
+  }
+}
+
+function _getStoredStr(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return raw;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function _setStoredStr(key, val) {
+  try {
+    localStorage.setItem(key, String(val || ''));
+  } catch (e) {
+    // ignore
+  }
+}
+
+function _sendClientSettings() {
+  const llmToggleEl = document.getElementById('llmToggle');
+  const modelSelectEl = document.getElementById('modelSelect');
+  const llm_enabled = !!(llmToggleEl && !llmToggleEl.disabled && llmToggleEl.checked);
+  const model_alias = modelSelectEl ? modelSelectEl.value : null;
+  wsManager.send({ type: 'client_settings', llm_enabled, model_alias });
+}
+
 async function initModelSelector() {
   const selectEl = document.getElementById('modelSelect');
   if (!selectEl) return;
+  const containerEl = selectEl.closest('.model-selector');
+  const llmToggleEl = document.getElementById('llmToggle');
+  const askLlmBtn = document.getElementById('askLlmBtn');
+  let askInFlight = false;
   try {
     const res = await fetch('/settings/ai_model');
     if (!res.ok) return;
     const data = await res.json();
-    const { model_alias: current, allowed } = data || {};
-    if (!allowed || !Array.isArray(allowed)) return;
+    const { llm_available: llmAvailable, model_alias: current, allowed } = data || {};
+    const isLlmAvailable = !!llmAvailable;
+
+    // Backend can run in heuristic-only mode; in that case model switching is disabled.
+    if (!allowed || !Array.isArray(allowed) || allowed.length === 0) {
+      selectEl.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = 'heuristic';
+      opt.textContent = 'heuristic';
+      opt.selected = true;
+      selectEl.appendChild(opt);
+      selectEl.disabled = true;
+      if (containerEl) {
+        containerEl.title = 'Backend is running in heuristic-only mode (LLM disabled)';
+      }
+      if (llmToggleEl) {
+        llmToggleEl.checked = false;
+        llmToggleEl.disabled = true;
+      }
+      if (askLlmBtn) {
+        askLlmBtn.disabled = true;
+        _setAskButtonState(askLlmBtn, 'idle', 'Ask once');
+      }
+      return;
+    }
 
     selectEl.innerHTML = '';
     allowed.forEach((name) => {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
-      if (name === current) {
-        opt.selected = true;
-      }
       selectEl.appendChild(opt);
     });
 
-    selectEl.onchange = async () => {
+    // Per-browser defaults (persisted in localStorage)
+    const storedAlias = _getStoredStr(STORAGE_KEYS.modelAlias, current);
+    const initialAlias = allowed.includes(storedAlias) ? storedAlias : current;
+    selectEl.value = initialAlias;
+    _setStoredStr(STORAGE_KEYS.modelAlias, initialAlias);
+
+    const storedLlmEnabled = _getStoredBool(STORAGE_KEYS.llmEnabled, false);
+    const initialLlmEnabled = storedLlmEnabled && isLlmAvailable;
+    if (llmToggleEl) {
+      llmToggleEl.checked = initialLlmEnabled;
+      llmToggleEl.disabled = !isLlmAvailable;
+    }
+    if (askLlmBtn) {
+      askLlmBtn.disabled = !isLlmAvailable;
+      _setAskButtonState(askLlmBtn, 'idle', 'Ask once');
+    }
+    if (containerEl) {
+      containerEl.title = isLlmAvailable ? '' : 'LLM not configured on backend';
+    }
+
+    selectEl.onchange = () => {
       const alias = selectEl.value;
-      try {
-        const resp = await fetch('/settings/ai_model', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model_alias: alias }),
-        });
-        if (!resp.ok) {
-          renderer.log(`Failed to switch model to ${alias}`);
+      _setStoredStr(STORAGE_KEYS.modelAlias, alias);
+      renderer.log(`Model selected (this browser): ${alias}`);
+      _sendClientSettings();
+    };
+
+    if (llmToggleEl) {
+      llmToggleEl.onchange = () => {
+        const enabled = !!llmToggleEl.checked;
+        _setStoredBool(STORAGE_KEYS.llmEnabled, enabled);
+        renderer.log(`LLM auto-calls (this browser): ${enabled ? 'ON' : 'OFF'}`);
+        _sendClientSettings();
+      };
+    }
+
+    if (askLlmBtn) {
+      askLlmBtn.onclick = async () => {
+        if (!isLlmAvailable) return;
+        if (askInFlight) return;
+        const tableId = gameState.getTableId();
+        const seat = gameState.getHeroSeat() || 1;
+        const alias = selectEl.value;
+        if (!tableId) {
+          renderer.log('No table id yet; start a session first.');
+          _setAskButtonState(askLlmBtn, 'error', 'No table');
+          setTimeout(() => _setAskButtonState(askLlmBtn, 'idle', 'Ask once'), 1200);
           return;
         }
-        renderer.log(`AI model switched to: ${alias}`);
-      } catch (e) {
-        renderer.log(`Error switching model: ${e}`);
-      }
-    };
+        askInFlight = true;
+        askLlmBtn.disabled = true;
+        _setAskButtonState(askLlmBtn, 'loading', 'Asking…');
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 15000);
+          const llmRes = await fetch(`/tables/${tableId}/ai_advice/llm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ seat, model_alias: alias }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!llmRes.ok) {
+            let err = null;
+            try {
+              err = await llmRes.json();
+            } catch (e) {
+              // ignore
+            }
+            const msg = err && err.error ? err.error : `HTTP ${llmRes.status}`;
+            renderer.log(`LLM advice unavailable: ${msg}`);
+            _setAskButtonState(askLlmBtn, 'error', 'Failed');
+            return;
+          }
+          const adviceMsg = await llmRes.json();
+          processMessage(adviceMsg);
+          _setAskButtonState(askLlmBtn, 'success', 'Done');
+        } catch (e) {
+          renderer.log(`Error requesting LLM advice: ${e}`);
+          _setAskButtonState(askLlmBtn, 'error', 'Failed');
+        } finally {
+          askInFlight = false;
+          // Re-enable after a short confirmation window.
+          setTimeout(() => {
+            if (askLlmBtn) {
+              askLlmBtn.disabled = !isLlmAvailable;
+              _setAskButtonState(askLlmBtn, 'idle', 'Ask once');
+            }
+          }, 1200);
+        }
+      };
+    }
+
+    // Push current per-browser settings to the server (so auto advice respects the toggle).
+    _sendClientSettings();
   } catch (e) {
     // ignore
   }

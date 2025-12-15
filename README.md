@@ -37,8 +37,9 @@ By default the project uses a dummy provider (no external calls). To enable the 
 ```bash
 export AI_PROVIDER=openai                # or 'gateway'; enables OpenAICompatibleProvider
 export OPENAI_API_KEY="your_gateway_key" # key for your OpenAI-compatible gateway
-export OPENAI_API_BASE="https://oneapi.laisky.com/v1"  # or your own /v1 endpoint
+export OPENAI_API_BASE="https://oneapi.laisky.com/v1"  # or set OPENAI_API_URL to your /v1 endpoint
 export AI_MODEL_ALIAS="gpt-5.1-chat-latest"            # any allowed model alias
+export AI_COACH_DEBUG=1                  # optional; prints LLM debug info (token truncation, fallback path)
 ```
 
 `AI_PROVIDER=openai` (or `gateway`) switches the backend to use `OpenAICompatibleProvider`, which talks directly to your OpenAI-compatible `/chat/completions` endpoint. The actual models are defined in `poker/ai_coach.py` via `ALLOWED_MODELS` (keys are the human-visible names, values are the model ids passed to the gateway). In the current setup these keys are real model names such as:

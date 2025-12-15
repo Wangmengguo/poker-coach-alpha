@@ -191,3 +191,14 @@ Date: 2025-12-13
   - Investigated `gpt-5.2` returning empty `message.content` with `finish_reason=length` and fixed it by increasing `max_tokens` and automatically retrying via the Responses API when chat completions produce an empty content string.
   - Increased `chat.completions` `max_tokens` from 512 to 1024 and Responses fallback `max_output_tokens` from 512 to 1024 to further reduce truncation on platforms where `gpt-5.2` can consume token budget without emitting a final JSON payload.
   - Added an opt-in `AI_COACH_DEBUG=1` mode to print per-request extraction diagnostics (finish_reason, content type/length, and whether Responses fallback was used) to accelerate gateway troubleshooting.
+
+Date: 2025-12-15
+
+- Frontend table layout + bet label improvements:
+  - Fixed overlap between right-side seats (SB/BB) by increasing separation in CSS seat positioning:
+    - Adjusted `.seat-2` and `.seat-3` in `public/style.css` so the two player cards no longer stack on top of each other.
+  - Moved per-player bet amount (`.player-bet`) out of the player info card to better use empty felt space:
+    - Updated `public/index.html` so each `.seat` contains a sibling `.player-bet` element (no longer inside `.player-info`).
+    - Updated `public/modules/renderer.js` to query bet elements from the seat container (`container.querySelector('.player-bet')`).
+  - Repositioned bet labels closer to the table (toward the center) without cluttering the player card:
+    - `.player-bet` is now absolutely positioned, uses CSS variables `--bet-x/--bet-y`, and applies per-seat offsets in `public/style.css` so bet amounts appear near the table edge for each seat.
