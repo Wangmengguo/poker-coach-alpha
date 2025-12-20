@@ -209,6 +209,17 @@ Date: 2025-12-20
   - Added `gemini-3-flash-preview` to `poker/ai_coach.py` `ALLOWED_MODELS` so it can be selected via `AI_MODEL_ALIAS` / `/settings/ai_model`.
   - Updated `README.md` model list and extended `tests/test_ai_coach_models.py` to cover the new alias.
 
+- Frontend card rendering: text -> minimal SVG (readability-first):
+  - Inlined an SVG suit sprite in `public/index.html` (4 symbols: `suit-heart`, `suit-diamond`, `suit-club`, `suit-spade`) so cards can reference local `#suit-*` via `<use>` without extra fetches or cross-file `<use>` issues.
+  - Updated `public/modules/renderer.js` to render cards as SVG instead of text:
+    - Added `_parseCard(...)` to support `Ah/Kd/10h/Ts/??` and normalize `T -> 10` display.
+    - Added `_makeCardSvg(rank, suit)` to draw only top-left rank + a large center suit symbol (no bottom-right).
+    - Replaced all card `textContent` rendering in board / hole / showdown paths with the SVG renderer; kept `??` as face-down via `.card.hidden`.
+  - Updated `public/style.css` to support SVG card layout and readability:
+    - `.card` becomes a fixed-size SVG container; `.card-svg` fills 100%.
+    - Rank uses `var(--font-mono)` and `tabular-nums`, and uses `paint-order: stroke fill` with a light stroke to stay legible at small sizes.
+    - Added hand-only overrides (`.player-cards ...`) to further boost rank size and suit scale without increasing card box size; board sizing kept stable.
+
 - Frontend feel + depth (core hand feedback + visual polish):
   - Renderer diff-based micro-animations:
     - Added lightweight render caches in `public/modules/renderer.js` (last board/pot/bets/to_act/hand_id) so animations trigger only on state changes and reset cleanly per hand.

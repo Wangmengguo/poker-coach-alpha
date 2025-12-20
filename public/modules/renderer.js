@@ -65,6 +65,78 @@ export class Renderer {
     this._potAnimRaf = null;
   }
 
+  _parseCard(cardStr) {
+    // Supports: "Ah", "Kd", "10h", "Ts", and special hidden "??"
+    if (!cardStr || typeof cardStr !== 'string') return null;
+    if (cardStr === '??') return { hidden: true, rank: null, suit: null };
+    if (cardStr.length < 2) return null;
+
+    const suitRaw = cardStr.charAt(cardStr.length - 1).toLowerCase();
+    const suit = ['h', 'd', 's', 'c'].includes(suitRaw) ? suitRaw : null;
+    if (!suit) return null;
+
+    let rankRaw = cardStr.slice(0, -1).toUpperCase();
+    // Normalize rank: allow "T" but display as "10" per product requirement.
+    if (rankRaw === 'T') rankRaw = '10';
+    const valid = new Set(['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2']);
+    if (!valid.has(rankRaw)) return null;
+
+    return { hidden: false, rank: rankRaw, suit };
+  }
+
+  _suitSymbolId(suit) {
+    switch (suit) {
+      case 'h':
+        return 'suit-heart';
+      case 'd':
+        return 'suit-diamond';
+      case 'c':
+        return 'suit-club';
+      case 's':
+        return 'suit-spade';
+      default:
+        return null;
+    }
+  }
+
+  _makeCardSvg(rank, suit) {
+    const symId = this._suitSymbolId(suit);
+    if (!symId || !rank) return null;
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const xlinkNS = 'http://www.w3.org/1999/xlink';
+
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.classList.add('card-svg');
+    svg.setAttribute('viewBox', '0 0 64 88');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `${rank}${suit}`);
+
+    const text = document.createElementNS(svgNS, 'text');
+    text.classList.add('card-rank');
+    // Positioning tuned for small cards. CSS can override font-size.
+    text.setAttribute('x', rank === '10' ? '5' : '8');
+    // With larger font-size, push down slightly to avoid clipping.
+    text.setAttribute('y', '24');
+    text.textContent = rank;
+    svg.appendChild(text);
+
+    const use = document.createElementNS(svgNS, 'use');
+    use.classList.add('card-suit');
+    use.setAttribute('href', `#${symId}`);
+    // Safari fallback
+    use.setAttributeNS(xlinkNS, 'xlink:href', `#${symId}`);
+    // Center suit icon
+    // Make suit larger and a bit lower for readability.
+    use.setAttribute('x', '10');
+    use.setAttribute('y', '34');
+    use.setAttribute('width', '44');
+    use.setAttribute('height', '44');
+    svg.appendChild(use);
+
+    return svg;
+  }
+
   _prefersReducedMotion() {
     try {
       return !!(window && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -269,10 +341,17 @@ export class Renderer {
       boardArr.forEach((card, idx) => {
         const cardEl = document.createElement('div');
         cardEl.className = 'card';
-        cardEl.textContent = card;
-        const suit = this.getSuit(card);
-        if (suit) {
-          cardEl.dataset.suit = suit;
+        const parsed = this._parseCard(card);
+        if (parsed && !parsed.hidden) {
+          cardEl.dataset.suit = parsed.suit;
+          cardEl.dataset.rank = parsed.rank;
+          const svg = this._makeCardSvg(parsed.rank, parsed.suit);
+          if (svg) cardEl.appendChild(svg);
+        } else {
+          // Fallback (should be rare for board): keep minimal text
+          cardEl.textContent = card;
+          const suit = this.getSuit(card);
+          if (suit) cardEl.dataset.suit = suit;
         }
         if (shouldAnimateBoard && idx >= prevBoardLen) {
           cardEl.classList.add('deal-in');
@@ -317,13 +396,16 @@ export class Renderer {
           this._lastHoleBySeat[seat] = (player.hole || []).slice();
           player.hole.forEach((card) => {
             const cardEl = document.createElement('div');
-            cardEl.className = card === '??' ? 'card hidden' : 'card';
-            cardEl.textContent = card === '??' ? '?' : card;
-            if (card !== '??') {
-              const suit = this.getSuit(card);
-              if (suit) {
-                cardEl.dataset.suit = suit;
-              }
+            const parsed = this._parseCard(card);
+            cardEl.className = parsed && parsed.hidden ? 'card hidden' : 'card';
+            if (parsed && !parsed.hidden) {
+              cardEl.dataset.suit = parsed.suit;
+              cardEl.dataset.rank = parsed.rank;
+              const svg = this._makeCardSvg(parsed.rank, parsed.suit);
+              if (svg) cardEl.appendChild(svg);
+            } else {
+              // Hidden card: keep current back styling, no SVG. (Fallback: render "?")
+              cardEl.textContent = '?';
             }
             cardsEl.appendChild(cardEl);
           });
@@ -690,10 +772,16 @@ export class Renderer {
       (p.hole || []).forEach((card) => {
         const cardEl = document.createElement('div');
         cardEl.className = 'card';
-        cardEl.textContent = card;
-        const suit = this.getSuit(card);
-        if (suit) {
-          cardEl.dataset.suit = suit;
+        const parsed = this._parseCard(card);
+        if (parsed && !parsed.hidden) {
+          cardEl.dataset.suit = parsed.suit;
+          cardEl.dataset.rank = parsed.rank;
+          const svg = this._makeCardSvg(parsed.rank, parsed.suit);
+          if (svg) cardEl.appendChild(svg);
+        } else {
+          cardEl.textContent = card;
+          const suit = this.getSuit(card);
+          if (suit) cardEl.dataset.suit = suit;
         }
         cardsEl.appendChild(cardEl);
       });
