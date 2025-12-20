@@ -1022,9 +1022,9 @@ pre {
   color: inherit;
 }
 
+/* Keep baseline identical: do NOT change font-size for 10, only tighten spacing */
 .card[data-rank="10"] .card-svg .card-rank {
-  font-size: 18px;
-  stroke-width: 1.4px;
+  letter-spacing: -1.8px;
 }
 
 /* Hand cards: boost readability without changing card size */
@@ -1034,8 +1034,7 @@ pre {
 }
 
 .player-cards .card[data-rank="10"] .card-svg .card-rank {
-  font-size: 21px;
-  stroke-width: 1.6px;
+  letter-spacing: -2.2px;
 }
 
 /* Hand cards: slightly larger center suit for readability */
@@ -1082,7 +1081,7 @@ pre {
 }
 
 .board .card[data-rank="10"] .card-svg .card-rank {
-  font-size: 24px;
+  letter-spacing: -2.4px;
 }
 
 /* Card suit colors */
@@ -1655,7 +1654,7 @@ a:focus-visible,
   }
 
   .card[data-rank="10"] .card-svg .card-rank {
-    font-size: 17px;
+    letter-spacing: -1.6px;
   }
 
   .player-cards .card-svg .card-rank {
@@ -1664,7 +1663,7 @@ a:focus-visible,
   }
 
   .player-cards .card[data-rank="10"] .card-svg .card-rank {
-    font-size: 20px;
+    letter-spacing: -2px;
   }
 
   .player-cards .card-svg .card-suit {

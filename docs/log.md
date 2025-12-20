@@ -219,6 +219,9 @@ Date: 2025-12-20
     - `.card` becomes a fixed-size SVG container; `.card-svg` fills 100%.
     - Rank uses `var(--font-mono)` and `tabular-nums`, and uses `paint-order: stroke fill` with a light stroke to stay legible at small sizes.
     - Added hand-only overrides (`.player-cards ...`) to further boost rank size and suit scale without increasing card box size; board sizing kept stable.
+  - Follow-up tweaks for alignment and readability:
+    - Updated `public/modules/renderer.js` rank positioning to use a fixed `x` and `dominant-baseline="hanging"` so rank top alignment stays consistent.
+    - Removed the special-case `10` font-size overrides in `public/style.css`; `10` now keeps the same font-size as other ranks and uses tighter `letter-spacing` to fit, ensuring baseline/height consistency across ranks.
 
 - Frontend feel + depth (core hand feedback + visual polish):
   - Renderer diff-based micro-animations:

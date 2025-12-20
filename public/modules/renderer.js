@@ -114,10 +114,12 @@ export class Renderer {
 
     const text = document.createElementNS(svgNS, 'text');
     text.classList.add('card-rank');
-    // Positioning tuned for small cards. CSS can override font-size.
-    text.setAttribute('x', rank === '10' ? '5' : '8');
-    // With larger font-size, push down slightly to avoid clipping.
-    text.setAttribute('y', '24');
+    // Keep rank aligned across single-char ranks and "10":
+    // - Use a constant x
+    // - Use top alignment (hanging) so different font-sizes still align visually
+    text.setAttribute('x', '8');
+    text.setAttribute('y', '6');
+    text.setAttribute('dominant-baseline', 'hanging');
     text.textContent = rank;
     svg.appendChild(text);
 
