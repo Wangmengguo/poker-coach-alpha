@@ -35,6 +35,7 @@ class DummyProvider:
 ALLOWED_MODELS: Dict[str, str] = {
     "claude-4.5-sonnet": "claude-4.5-sonnet",
     "claude-opus-4-5": "claude-opus-4-5",
+    "gemini-3-flash-preview": "gemini-3-flash-preview",
     "moonshotai/kimi-k2-instruct": "moonshotai/kimi-k2-instruct",
     "gpt-5.1-chat-latest": "gpt-5.1-chat-latest",
     "gpt-5.2": "gpt-5.2",

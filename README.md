@@ -46,6 +46,7 @@ export AI_COACH_DEBUG=1                  # optional; prints LLM debug info (toke
 
 - `claude-4.5-sonnet`
 - `claude-opus-4-5`
+- `gemini-3-flash-preview`
 - `moonshotai/kimi-k2-instruct`
 - `gpt-5.1-chat-latest`
 - `gpt-5.2`

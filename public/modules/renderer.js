@@ -52,6 +52,70 @@ export class Renderer {
 
     this.drawerOpen = false;
     this.drawerUserPinnedClosed = false;
+
+    // Lightweight render cache for diff-based micro-animations
+    this._hasRenderedOnce = false;
+    this._lastHandId = null;
+    this._lastBoard = [];
+    this._lastPot = null;
+    this._lastBetsBySeat = {};
+    this._lastToAct = null;
+    this._lastHoleBySeat = {};
+
+    this._potAnimRaf = null;
+  }
+
+  _prefersReducedMotion() {
+    try {
+      return !!(window && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  _bumpEl(el, className, durationMs = 260) {
+    if (!el) return;
+    el.classList.remove(className);
+    // Force reflow so re-adding the class reliably restarts the animation.
+    // eslint-disable-next-line no-unused-expressions
+    el.offsetWidth;
+    el.classList.add(className);
+    window.setTimeout(() => el.classList.remove(className), durationMs);
+  }
+
+  _easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  _animateCurrency(el, from, to, durationMs = 360) {
+    if (!el) return;
+    const a = Number(from);
+    const b = Number(to);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || durationMs <= 0 || this._prefersReducedMotion()) {
+      setText(el, `$${Number.isFinite(b) ? b : 0}`);
+      return;
+    }
+
+    if (this._potAnimRaf) {
+      cancelAnimationFrame(this._potAnimRaf);
+      this._potAnimRaf = null;
+    }
+
+    const start = performance.now();
+    const run = (now) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = this._easeOutCubic(t);
+      const v = Math.round(a + (b - a) * eased);
+      setText(el, `$${v}`);
+      if (t < 1) {
+        this._potAnimRaf = requestAnimationFrame(run);
+      } else {
+        this._potAnimRaf = null;
+        setText(el, `$${b}`);
+      }
+    };
+
+    this._potAnimRaf = requestAnimationFrame(run);
   }
 
   log(msg) {
@@ -177,13 +241,32 @@ export class Renderer {
     return null;
   }
 
-  renderPotAndBoard(pot, board, street) {
+  renderPotAndBoard(pot, board, street, options = {}) {
     const { potAmountEl, boardEl, streetInfoEl } = this.cached;
-    setText(potAmountEl, `$${pot}`);
+    const canAnimate = !!options.canAnimate && !this._prefersReducedMotion();
+    const potNum = Number(pot ?? 0);
+
+    if (this._lastPot == null || !canAnimate) {
+      setText(potAmountEl, `$${Number.isFinite(potNum) ? potNum : 0}`);
+    } else if (Number.isFinite(potNum) && potNum !== this._lastPot) {
+      this._animateCurrency(potAmountEl, this._lastPot, potNum, 360);
+      this._bumpEl(potAmountEl, 'pot-bump', 300);
+    }
+    this._lastPot = Number.isFinite(potNum) ? potNum : 0;
+
     setText(streetInfoEl, street || '-');
     clearChildren(boardEl);
-    if (board && board.length > 0) {
-      board.forEach((card) => {
+    const boardArr = Array.isArray(board) ? board : [];
+    const prevBoardLen = Array.isArray(this._lastBoard) ? this._lastBoard.length : 0;
+    const shouldAnimateBoard =
+      canAnimate &&
+      !options.skipBoardAnimation &&
+      street !== 'showdown' &&
+      boardArr.length > 0 &&
+      boardArr.length > prevBoardLen;
+
+    if (boardArr.length > 0) {
+      boardArr.forEach((card, idx) => {
         const cardEl = document.createElement('div');
         cardEl.className = 'card';
         cardEl.textContent = card;
@@ -191,15 +274,25 @@ export class Renderer {
         if (suit) {
           cardEl.dataset.suit = suit;
         }
+        if (shouldAnimateBoard && idx >= prevBoardLen) {
+          cardEl.classList.add('deal-in');
+        }
         boardEl.appendChild(cardEl);
+        if (cardEl.classList.contains('deal-in')) {
+          requestAnimationFrame(() => {
+            cardEl.classList.add('deal-in-active');
+          });
+        }
       });
     }
+    this._lastBoard = boardArr.slice();
   }
 
-  renderPlayers(table, lastSnapshot) {
+  renderPlayers(table, lastSnapshot, options = {}) {
     const players = table.players || [];
     const bets = (lastSnapshot?.table?.bets) || {};
     const positions = lastSnapshot?.table?.positions || {};
+    const canAnimate = !!options.canAnimate && !this._prefersReducedMotion();
 
     for (let seat = 1; seat <= MAX_SEATS; seat += 1) {
       const cachedSeat = this.cached.seats[seat];
@@ -221,6 +314,7 @@ export class Renderer {
 
         clearChildren(cardsEl);
         if (player.hole && player.hole.length > 0) {
+          this._lastHoleBySeat[seat] = (player.hole || []).slice();
           player.hole.forEach((card) => {
             const cardEl = document.createElement('div');
             cardEl.className = card === '??' ? 'card hidden' : 'card';
@@ -237,13 +331,22 @@ export class Renderer {
 
         const betAmt = parseInt(bets[String(seat)] || 0, 10);
         if (betEl) {
+          const prevBet = Number(this._lastBetsBySeat[seat] ?? 0);
           if (betAmt > 0) {
             betEl.textContent = `$${betAmt}`;
             betEl.classList.add('show');
+            if (canAnimate) {
+              if (prevBet <= 0) {
+                this._bumpEl(betEl, 'bet-pop', 260);
+              } else if (prevBet !== betAmt) {
+                this._bumpEl(betEl, 'bet-bump', 220);
+              }
+            }
           } else {
             betEl.textContent = '';
             betEl.classList.remove('show');
           }
+          this._lastBetsBySeat[seat] = Number.isFinite(betAmt) ? betAmt : 0;
         }
       } else {
         setText(nameEl, 'Empty');
@@ -255,20 +358,36 @@ export class Renderer {
           betEl.classList.remove('show');
         }
         playerInfo.classList.remove('active', 'human');
+        this._lastBetsBySeat[seat] = 0;
+        delete this._lastHoleBySeat[seat];
       }
     }
+    this._lastToAct = table.to_act ?? null;
   }
 
   renderState(table, lastSnapshot) {
+    // Reset per-hand caches when the hand changes to avoid animating the initial render of a new hand.
+    if (table && table.hand_id && table.hand_id !== this._lastHandId) {
+      this._lastHandId = table.hand_id;
+      this._lastBoard = [];
+      this._lastPot = null;
+      this._lastBetsBySeat = {};
+      this._lastToAct = null;
+      this._lastHoleBySeat = {};
+    }
+
     const sessionActive =
       Object.prototype.hasOwnProperty.call(table, 'session_active') && table.session_active === false
         ? false
         : true;
     this.updateSessionInfo(table.hand_id, sessionActive);
-    this.renderPotAndBoard(table.pot, table.board, table.street);
-    this.renderPlayers(table, lastSnapshot);
+    const canAnimate = this._hasRenderedOnce;
+    this.renderPotAndBoard(table.pot, table.board, table.street, { canAnimate });
+    this.renderPlayers(table, lastSnapshot, { canAnimate });
     const { showdownSummaryEl } = this.cached;
     if (showdownSummaryEl) showdownSummaryEl.style.display = 'none';
+
+    if (!this._hasRenderedOnce) this._hasRenderedOnce = true;
   }
 
   openDrawer(auto = false) {
@@ -549,7 +668,7 @@ export class Renderer {
       const num = Number(cleaned);
       potValue = Number.isFinite(num) ? num : 0;
     }
-    this.renderPotAndBoard(potValue, msg.board || [], 'showdown');
+    this.renderPotAndBoard(potValue, msg.board || [], 'showdown', { canAnimate: false, skipBoardAnimation: true });
 
     const sdPlayers = msg.players || [];
     const winners = msg.winners || [];

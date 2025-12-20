@@ -202,3 +202,29 @@ Date: 2025-12-15
     - Updated `public/modules/renderer.js` to query bet elements from the seat container (`container.querySelector('.player-bet')`).
   - Repositioned bet labels closer to the table (toward the center) without cluttering the player card:
     - `.player-bet` is now absolutely positioned, uses CSS variables `--bet-x/--bet-y`, and applies per-seat offsets in `public/style.css` so bet amounts appear near the table edge for each seat.
+
+Date: 2025-12-20
+
+- AI Coach model whitelist:
+  - Added `gemini-3-flash-preview` to `poker/ai_coach.py` `ALLOWED_MODELS` so it can be selected via `AI_MODEL_ALIAS` / `/settings/ai_model`.
+  - Updated `README.md` model list and extended `tests/test_ai_coach_models.py` to cover the new alias.
+
+- Frontend feel + depth (core hand feedback + visual polish):
+  - Renderer diff-based micro-animations:
+    - Added lightweight render caches in `public/modules/renderer.js` (last board/pot/bets/to_act/hand_id) so animations trigger only on state changes and reset cleanly per hand.
+    - Added prefers-reduced-motion-aware helpers for one-shot bumps and number tweening.
+  - Board deal-in animation:
+    - New community cards now animate in (deal-in) via `.card.deal-in` / `.deal-in-active` and a requestAnimationFrame class toggle in `public/modules/renderer.js`.
+  - Pot feedback:
+    - Pot amount now “bumps” and smoothly counts to the new value on changes (`.pot-bump` + JS tween), while respecting reduced-motion preferences.
+  - Bet label polish:
+    - Updated `.player-bet` styling to feel like a chip pill (glass/highlight + shadow) and added `bet-pop` (appear) / `bet-bump` (value change) animations.
+  - Turn indicator (no timer):
+    - Enhanced `.player-info.active` with a pulsing ring to make “who’s to act” obvious without introducing an inaccurate countdown.
+  - Message queue pacing:
+    - Tweaked `public/modules/messageQueue.js` default delays (slightly faster `action_taken`/`snapshot`, still-paused `board_change`) so new animations have time to read without slowing the game too much.
+  - Table texture + glass panels:
+    - Added subtle felt texture + vignette to `.poker-table` using pseudo-elements, plus z-index isolation to keep overlays behind content.
+    - Added optional glassmorphism (`backdrop-filter` with fallback) to `.pot-info`, `.model-selector`, `.llm-controls`, and `.drawer-section-body`.
+  - Card polish:
+    - Improved `.card` borders/highlights and added a simple patterned back for `.card.hidden`.

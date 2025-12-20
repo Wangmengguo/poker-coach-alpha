@@ -9,9 +9,9 @@
 
 // Default delays (ms) for different message types
 const DEFAULT_DELAYS = {
-  action_taken: 800,   // Bot action - pause to show notification
-  snapshot: 100,       // State update - quick
-  board_change: 1200,  // New community cards dealt - longer pause
+  action_taken: 650,   // Bot action - pause to show notification
+  snapshot: 90,        // State update - quick
+  board_change: 1100,  // New community cards dealt - longer pause
   showdown: 1500,      // Showdown - longer pause to view hands
   hand_end: 500,       // Hand completion - brief pause
   prompt: 0,           // User's turn - immediate
