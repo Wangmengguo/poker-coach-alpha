@@ -4,10 +4,11 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 import asyncio
 from dataclasses import dataclass
+import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -28,6 +29,10 @@ from poker.ai_coach import (
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
+APP_PREFIX = os.getenv("APP_PREFIX", "/cards").strip() or "/cards"
+if not APP_PREFIX.startswith("/"):
+    APP_PREFIX = "/" + APP_PREFIX
+APP_PREFIX = APP_PREFIX.rstrip("/") or "/cards"
 
 app = FastAPI(title="Poker Coach Alpha")
 
@@ -41,7 +46,14 @@ app.add_middleware(
 
 # Serve static client
 if PUBLIC_DIR.exists():
+    # Back-compat: keep /public for local dev / older clients.
     app.mount("/public", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="public")
+    # Preferred deployment prefix for isolation under a subpath (e.g. /cards).
+    app.mount(
+        f"{APP_PREFIX}/public",
+        StaticFiles(directory=str(PUBLIC_DIR), html=True),
+        name="public_prefixed",
+    )
 
 
 @dataclass
@@ -336,7 +348,20 @@ def index() -> HTMLResponse:
     )
 
 
+@app.get(f"{APP_PREFIX}", include_in_schema=False)
+def index_prefixed_redirect() -> RedirectResponse:
+    # Ensure relative paths resolve correctly under the prefix (trailing slash).
+    return RedirectResponse(url=f"{APP_PREFIX}/", status_code=307)
+
+
+@app.get(f"{APP_PREFIX}/", response_class=HTMLResponse)
+def index_prefixed() -> HTMLResponse:
+    # Serve the same index.html but under the /cards (or APP_PREFIX) mount.
+    return index()
+
+
 @app.post("/tables")
+@app.post(f"{APP_PREFIX}/tables")
 def create_table():
     table_id = DEFAULT_TABLE_ID
     _engines[table_id] = TableEngine(EngineConfig(session_id=table_id))
@@ -344,6 +369,7 @@ def create_table():
 
 
 @app.get("/settings/ai_model")
+@app.get(f"{APP_PREFIX}/settings/ai_model")
 def get_ai_model_settings():
     return {
         "model_alias": get_current_model_alias(),
@@ -355,6 +381,7 @@ def get_ai_model_settings():
 
 
 @app.post("/settings/ai_model")
+@app.post(f"{APP_PREFIX}/settings/ai_model")
 def set_ai_model_settings(body: AiModelAliasBody):
     alias = body.model_alias
     if not set_current_model_alias(alias):
@@ -363,6 +390,7 @@ def set_ai_model_settings(body: AiModelAliasBody):
 
 
 @app.post("/tables/{table_id}/join")
+@app.post(f"{APP_PREFIX}/tables/{{table_id}}/join")
 def join_table(table_id: str):
     engine = _engines.get(table_id)
     if not engine:
@@ -372,6 +400,7 @@ def join_table(table_id: str):
 
 
 @app.post("/tables/{table_id}/ai_advice/llm")
+@app.post(f"{APP_PREFIX}/tables/{{table_id}}/ai_advice/llm")
 async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
     engine = _engines.get(table_id)
     if not engine or engine.state is None:
@@ -428,6 +457,7 @@ async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
 
 
 @app.post("/tables/{table_id}/start")
+@app.post(f"{APP_PREFIX}/tables/{{table_id}}/start")
 def start_session(table_id: str):
     engine = _engines.get(table_id)
     if not engine:
@@ -454,6 +484,7 @@ def start_session(table_id: str):
 
 
 @app.post("/tables/{table_id}/next")
+@app.post(f"{APP_PREFIX}/tables/{{table_id}}/next")
 def next_hand(table_id: str):
     engine = _engines.get(table_id)
     if not engine or engine.state is None:
@@ -479,6 +510,7 @@ def next_hand(table_id: str):
 
 
 @app.get("/tables/{table_id}/state")
+@app.get(f"{APP_PREFIX}/tables/{{table_id}}/state")
 def get_state(table_id: str):
     engine = _engines.get(table_id)
     if not engine or engine.state is None:
@@ -488,6 +520,7 @@ def get_state(table_id: str):
 
 
 @app.post("/tables/{table_id}/restart")
+@app.post(f"{APP_PREFIX}/tables/{{table_id}}/restart")
 def restart_session(table_id: str):
     engine = _engines.get(table_id)
     if not engine:
@@ -507,6 +540,7 @@ def restart_session(table_id: str):
 
 
 @app.websocket("/ws/tables/{table_id}")
+@app.websocket(f"{APP_PREFIX}/ws/tables/{{table_id}}")
 async def ws_table(websocket: WebSocket, table_id: str):
     await manager.connect(table_id, websocket)
     try:

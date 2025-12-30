@@ -1,4 +1,4 @@
-import { DEFAULT_TABLE_ID } from '../utils/constants.js';
+import { DEFAULT_TABLE_ID, wsAbsoluteUrl } from '../utils/constants.js';
 
 /**
  * Lightweight WebSocket manager with basic reconnect and event callbacks.
@@ -6,7 +6,7 @@ import { DEFAULT_TABLE_ID } from '../utils/constants.js';
  */
 export class WebSocketManager {
   constructor(url, options = {}) {
-    this.url = url || `ws://${location.host}/ws/tables/${DEFAULT_TABLE_ID}?player_id=human`;
+    this.url = url || wsAbsoluteUrl(`/ws/tables/${DEFAULT_TABLE_ID}?player_id=human`);
     this.maxRetries = options.maxRetries ?? 5;
     this.retryDelay = options.retryDelay ?? 1000;
     this.reconnectAttempts = 0;

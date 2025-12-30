@@ -1,5 +1,6 @@
 import { DEFAULT_TABLE_ID } from '../utils/constants.js';
 import { setVisible } from '../utils/dom.js';
+import { withBase } from '../utils/constants.js';
 
 /**
  * ActionHandler wires UI buttons to backend REST endpoints and WebSocket actions.
@@ -26,9 +27,9 @@ export class ActionHandler {
 
   async join() {
     try {
-      const res = await fetch('/tables', { method: 'POST' });
+      const res = await fetch(withBase('/tables'), { method: 'POST' });
       const { table_id } = await res.json();
-      const j = await fetch(`/tables/${table_id}/join`, { method: 'POST' });
+      const j = await fetch(withBase(`/tables/${table_id}/join`), { method: 'POST' });
       const joined = await j.json();
       this.renderer.log(`Joined table ${table_id} as seat ${joined.seat}`);
     } catch (e) {
@@ -38,7 +39,7 @@ export class ActionHandler {
 
   async start() {
     try {
-      const res = await fetch(`/tables/${DEFAULT_TABLE_ID}/start`, { method: 'POST' });
+      const res = await fetch(withBase(`/tables/${DEFAULT_TABLE_ID}/start`), { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         this.renderer.log(`Cannot start session: ${err.error || res.statusText}`);
@@ -61,7 +62,7 @@ export class ActionHandler {
     if (!this.nextHandBtn) return;
     try {
       this.nextHandBtn.disabled = true;
-      const res = await fetch(`/tables/${DEFAULT_TABLE_ID}/next`, { method: 'POST' });
+      const res = await fetch(withBase(`/tables/${DEFAULT_TABLE_ID}/next`), { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         this.renderer.log(`Cannot start next hand: ${err.error || res.statusText}`);

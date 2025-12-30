@@ -5,6 +5,7 @@ import { ActionHandler } from './modules/actions.js';
 import { AnalysisDrawer } from './modules/analysis.js';
 import { audioManager } from './modules/audio.js';
 import { MessageQueue, SPEED_PRESETS } from './modules/messageQueue.js';
+import { withBase } from './utils/constants.js';
 
 const gameState = new GameState();
 const renderer = new Renderer();
@@ -80,7 +81,7 @@ async function initModelSelector() {
   const askLlmBtn = document.getElementById('askLlmBtn');
   let askInFlight = false;
   try {
-    const res = await fetch('/settings/ai_model');
+    const res = await fetch(withBase('/settings/ai_model'));
     if (!res.ok) return;
     const data = await res.json();
     const { llm_available: llmAvailable, model_alias: current, allowed } = data || {};
@@ -172,7 +173,7 @@ async function initModelSelector() {
         try {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 15000);
-          const llmRes = await fetch(`/tables/${tableId}/ai_advice/llm`, {
+          const llmRes = await fetch(withBase(`/tables/${tableId}/ai_advice/llm`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ seat, model_alias: alias }),

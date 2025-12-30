@@ -242,3 +242,20 @@ Date: 2025-12-20
     - Added optional glassmorphism (`backdrop-filter` with fallback) to `.pot-info`, `.model-selector`, `.llm-controls`, and `.drawer-section-body`.
   - Card polish:
     - Improved `.card` borders/highlights and added a simple patterned back for `.card.hidden`.
+
+Date: 2025-12-30
+
+- Deployment / subpath isolation (MVP):
+  - Added configurable backend path prefix via `APP_PREFIX` (default `/cards`) and exposed a fully-isolated route set under the prefix:
+    - HTML entry: `GET /cards/` (plus `GET /cards` redirect to `/cards/`).
+    - Static assets: `/cards/public/...` mounted alongside the existing `/public/...` for backwards compatibility.
+    - REST: `/cards/tables...`, `/cards/settings...` in addition to the existing root routes.
+    - WebSocket: `/cards/ws/tables/{table_id}` in addition to the existing `/ws/...` route.
+  - Frontend routing/base-path hardening:
+    - Removed hardcoded `/cards` base from `public/index.html` and switched asset URLs to relative paths so the same build works under `/` or any subpath.
+    - Updated frontend to infer base path from the current URL (first path segment) when `<meta name="app-base">` is empty, avoiding 404s when `APP_PREFIX` is not `/cards` (e.g. `/poker`).
+    - Centralized path building helpers (`withBase`, `wsAbsoluteUrl`) and migrated all REST fetches, audio file URLs, and WebSocket URL construction to use them.
+    - Fixed HTTPS mixed-content by switching WS scheme automatically (`ws://` vs `wss://`) based on `location.protocol`.
+  - Notes:
+    - Existing root routes are kept for local dev/tests; isolation is achieved at the reverse-proxy layer by only exposing the `/cards/...` routes.
+    - Lints checked for touched files; no issues. Pytest was not runnable on this machine (pytest not installed).

@@ -1,3 +1,5 @@
+import { withBase } from '../utils/constants.js';
+
 /**
  * AudioManager - Modern, minimal audio system for poker game
  *
@@ -109,19 +111,19 @@ const SYNTH_PRESETS = {
 
 // External sound file paths (optional - if files exist, they'll be used)
 const SOUND_FILES = {
-  check: '/public/sounds/check.mp3',
-  call: '/public/sounds/call.mp3',
-  raise: '/public/sounds/raise.mp3',
-  fold: '/public/sounds/fold.mp3',
-  bet: '/public/sounds/bet.mp3',
-  turn: '/public/sounds/turn.mp3',
-  win: '/public/sounds/win.mp3',
-  deal: '/public/sounds/deal.mp3',
+  check: withBase('/public/sounds/check.mp3'),
+  call: withBase('/public/sounds/call.mp3'),
+  raise: withBase('/public/sounds/raise.mp3'),
+  fold: withBase('/public/sounds/fold.mp3'),
+  bet: withBase('/public/sounds/bet.mp3'),
+  turn: withBase('/public/sounds/turn.mp3'),
+  win: withBase('/public/sounds/win.mp3'),
+  deal: withBase('/public/sounds/deal.mp3'),
 };
 
 // Background music configuration
 const BGM_CONFIG = {
-  defaultUrl: '/public/sounds/bgm-lounge.mp3',
+  defaultUrl: withBase('/public/sounds/bgm-lounge.mp3'),
   volume: 0.15,
   fadeInDuration: 2000,
   fadeOutDuration: 1000,
