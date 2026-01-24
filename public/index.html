@@ -60,6 +60,11 @@
       
         <div class="controls">
           <button id="reconnectBtn" style="display: none;" aria-label="Reconnect to server">Reconnect</button>
+          <div class="invite-code-section">
+            <label for="inviteCodeInput" class="invite-label">Invite</label>
+            <input type="text" id="inviteCodeInput" class="invite-input" placeholder="POKER-XXXXXX" autocomplete="off" spellcheck="false" />
+            <span id="inviteStatus" class="invite-status" aria-live="polite"></span>
+          </div>
           <div class="model-selector">
             <span class="model-label">Model</span>
             <select id="modelSelect" aria-label="Select AI model"></select>

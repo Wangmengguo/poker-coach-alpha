@@ -35,5 +35,8 @@ public/*.map
 # Uvicorn/pytest artifacts
 *.sqlite
 
+# Data directory (SQLite databases)
+data/
+
 # Ignore bundled pokerkit repo
 pokerkit/

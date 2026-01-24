@@ -1,0 +1,56 @@
+# Poker Coach Alpha - Docker Compose Configuration
+#
+# Usage:
+#   1. Create a .env file with your API keys (see .env.example)
+#   2. Run: docker-compose up -d --build
+#   3. Access: http://localhost:8010/cards/
+#
+# Management:
+#   - Create invite code: docker-compose exec poker python -m tools.manage_invites create --note "description"
+#   - List invite codes:  docker-compose exec poker python -m tools.manage_invites list
+#   - View logs:          docker-compose logs -f poker
+
+services:
+  poker:
+    build: .
+    container_name: poker-coach
+    ports:
+      - "8010:8010"
+    environment:
+      # Application settings
+      - APP_PREFIX=/cards
+      
+      # AI Provider settings (required for LLM features)
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
+      
+      # Optional: Default model alias
+      - AI_MODEL_ALIAS=${AI_MODEL_ALIAS:-gpt-5.1-chat-latest}
+      
+      # Optional: Debug mode for AI Coach
+      - AI_COACH_DEBUG=${AI_COACH_DEBUG:-0}
+      
+      # Data directory for SQLite (inside container)
+      - DATA_DIR=/app/data
+    volumes:
+      # Persist invite codes database
+      - ./data:/app/data
+    restart: unless-stopped
+    
+    # Resource limits (adjust based on your server)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1536M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

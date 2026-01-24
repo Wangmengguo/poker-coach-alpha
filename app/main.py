@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional, Set
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -26,6 +26,7 @@ from poker.ai_coach import (
     DummyProvider,
     use_model_alias,
 )
+from poker.invite_codes import InviteCodeStore
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -60,6 +61,8 @@ if PUBLIC_DIR.exists():
 class ClientSettings:
     llm_enabled: bool = False
     model_alias: str = ""
+    invite_code: str = ""
+    invite_valid: bool = False
 
 
 class ConnectionManager:
@@ -108,12 +111,18 @@ class ConnectionManager:
         *,
         llm_enabled: Optional[bool] = None,
         model_alias: Optional[str] = None,
+        invite_code: Optional[str] = None,
+        invite_valid: Optional[bool] = None,
     ) -> ClientSettings:
         cur = self.get_settings(websocket)
         if llm_enabled is not None:
             cur.llm_enabled = bool(llm_enabled)
         if model_alias is not None and model_alias in set(get_allowed_model_aliases()):
             cur.model_alias = model_alias
+        if invite_code is not None:
+            cur.invite_code = str(invite_code).strip()
+        if invite_valid is not None:
+            cur.invite_valid = bool(invite_valid)
         self._settings[websocket] = cur
         return cur
 
@@ -130,6 +139,9 @@ _engines: Dict[str, TableEngine] = {
 _hand_strength_cache: Dict[tuple, HandStrengthResult] = {}
 _ai_provider = get_ai_provider_from_env()
 
+# Invite code store for API access control
+_invite_store = InviteCodeStore()
+
 
 class AiModelAliasBody(BaseModel):
     model_alias: str
@@ -138,6 +150,7 @@ class AiModelAliasBody(BaseModel):
 class AiAdviceRequestBody(BaseModel):
     seat: int = 1
     model_alias: Optional[str] = None
+    invite_code: Optional[str] = None
 
 
 async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
@@ -167,15 +180,24 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
         for ws in conns:
             settings = manager.get_settings(ws)
             advice = None
-            # Only call the LLM if this browser explicitly enabled it.
-            if settings.llm_enabled and not isinstance(_ai_provider, DummyProvider):
+            # Only call the LLM if:
+            # 1. Browser explicitly enabled it
+            # 2. Provider is configured (not DummyProvider)
+            # 3. Valid invite code is present
+            if (
+                settings.llm_enabled
+                and not isinstance(_ai_provider, DummyProvider)
+                and settings.invite_valid
+            ):
                 async with use_model_alias(settings.model_alias):
                     advice = await generate_ai_advice(
                         dc, legal_actions, _ai_provider, history
                     )
             else:
                 advice = select_actions_heuristic(dc, legal_actions)
-                if not settings.llm_enabled:
+                if not settings.invite_valid:
+                    advice.reason = "invite_code_required"
+                elif not settings.llm_enabled:
                     advice.reason = "client_disabled_llm"
                 elif isinstance(_ai_provider, DummyProvider):
                     advice.reason = "dummy_provider"
@@ -408,6 +430,11 @@ async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
     if isinstance(_ai_provider, DummyProvider):
         return JSONResponse(status_code=400, content={"error": "llm_not_configured"})
 
+    # Validate invite code
+    invite_code = body.invite_code
+    if not invite_code or not _invite_store.validate_code(invite_code):
+        return JSONResponse(status_code=403, content={"error": "invite_code_required"})
+
     seat = int(body.seat or 1)
     idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
     if idx is None:
@@ -564,15 +591,30 @@ async def ws_table(websocket: WebSocket, table_id: str):
             if data.get("type") == "client_settings":
                 llm_enabled = data.get("llm_enabled")
                 model_alias = data.get("model_alias")
+                invite_code = data.get("invite_code")
+
                 if model_alias is not None and model_alias not in set(get_allowed_model_aliases()):
                     await websocket.send_json(
                         {"type": "client_settings_ack", "error": "invalid_model_alias"}
                     )
                     continue
+
+                # Validate invite code if provided
+                invite_valid: Optional[bool] = None
+                if invite_code is not None:
+                    invite_code_str = str(invite_code).strip()
+                    if invite_code_str:
+                        invite_valid = _invite_store.validate_code(invite_code_str)
+                    else:
+                        # Empty string means user cleared the code
+                        invite_valid = False
+
                 new_settings = manager.update_settings(
                     websocket,
                     llm_enabled=bool(llm_enabled) if llm_enabled is not None else None,
                     model_alias=str(model_alias) if model_alias is not None else None,
+                    invite_code=str(invite_code) if invite_code is not None else None,
+                    invite_valid=invite_valid,
                 )
                 await websocket.send_json(
                     {
@@ -580,6 +622,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                         "llm_enabled": bool(new_settings.llm_enabled),
                         "model_alias": new_settings.model_alias,
                         "llm_available": not isinstance(_ai_provider, DummyProvider),
+                        "invite_valid": new_settings.invite_valid,
                     }
                 )
                 continue

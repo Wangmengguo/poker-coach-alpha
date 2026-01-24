@@ -1,4 +1,4 @@
-# Work Log
+# Log
 
 Date: 2025-11-22
 
@@ -193,6 +193,16 @@ Date: 2025-12-13
   - Added an opt-in `AI_COACH_DEBUG=1` mode to print per-request extraction diagnostics (finish_reason, content type/length, and whether Responses fallback was used) to accelerate gateway troubleshooting.
 
 Date: 2025-12-15
+
+- LLM toggle isolation per browser session:
+  - Added "per-browser isolated" LLM toggle: disabled by default, so even if `OPENAI_API_KEY` is configured on the backend, paid models are not automatically invoked.
+  - Backend now maintains `client_settings` (`llm_enabled` / `model_alias`) per WebSocket connection; LLM is called only when that connection has it enabled, otherwise returns heuristic advice with `reason=client_disabled_llm`.
+  - Implemented on-demand paid call endpoint: `POST /tables/{table_id}/ai_advice/llm` (frontend triggers one call per `Ask once` click).
+  - Frontend added `LLM` toggle and `Ask once` button; settings persisted to `localStorage` (browser-level) and synced to backend via WS.
+  - Added `use_model_alias(...)` concurrency lock to prevent model aliasing conflicts during concurrent calls.
+  - UI: Changed `LLM` toggle to a toggle-switch style; renamed `Ask` to `Ask once`.
+  - UI: Added interaction feedback for `Ask once` (loading spinner / Done / Failed), disabled repeat clicks, and added 15s timeout.
+  - Self-check: `pytest -q` (53 passed).
 
 - Frontend table layout + bet label improvements:
   - Fixed overlap between right-side seats (SB/BB) by increasing separation in CSS seat positioning:

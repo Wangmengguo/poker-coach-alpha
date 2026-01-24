@@ -19,6 +19,7 @@ let hasAutoJoined = false;
 const STORAGE_KEYS = {
   llmEnabled: 'pokerCoach.llmEnabled',
   modelAlias: 'pokerCoach.modelAlias',
+  inviteCode: 'pokerCoach.inviteCode',
 };
 
 function _setAskButtonState(btn, state, label) {
@@ -68,9 +69,17 @@ function _setStoredStr(key, val) {
 function _sendClientSettings() {
   const llmToggleEl = document.getElementById('llmToggle');
   const modelSelectEl = document.getElementById('modelSelect');
+  const inviteCodeEl = document.getElementById('inviteCodeInput');
   const llm_enabled = !!(llmToggleEl && !llmToggleEl.disabled && llmToggleEl.checked);
   const model_alias = modelSelectEl ? modelSelectEl.value : null;
-  wsManager.send({ type: 'client_settings', llm_enabled, model_alias });
+  const invite_code = inviteCodeEl ? inviteCodeEl.value.trim().toUpperCase() : null;
+  wsManager.send({ type: 'client_settings', llm_enabled, model_alias, invite_code });
+}
+
+function _setInviteStatus(status) {
+  const statusEl = document.getElementById('inviteStatus');
+  if (!statusEl) return;
+  statusEl.dataset.status = status || '';
 }
 
 async function initModelSelector() {
@@ -161,9 +170,17 @@ async function initModelSelector() {
         const tableId = gameState.getTableId();
         const seat = gameState.getHeroSeat() || 1;
         const alias = selectEl.value;
+        const inviteCodeEl = document.getElementById('inviteCodeInput');
+        const invite_code = inviteCodeEl ? inviteCodeEl.value.trim().toUpperCase() : '';
         if (!tableId) {
           renderer.log('No table id yet; start a session first.');
           _setAskButtonState(askLlmBtn, 'error', 'No table');
+          setTimeout(() => _setAskButtonState(askLlmBtn, 'idle', 'Ask once'), 1200);
+          return;
+        }
+        if (!invite_code) {
+          renderer.log('Invite code required for LLM advice.');
+          _setAskButtonState(askLlmBtn, 'error', 'Need code');
           setTimeout(() => _setAskButtonState(askLlmBtn, 'idle', 'Ask once'), 1200);
           return;
         }
@@ -176,7 +193,7 @@ async function initModelSelector() {
           const llmRes = await fetch(withBase(`/tables/${tableId}/ai_advice/llm`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seat, model_alias: alias }),
+            body: JSON.stringify({ seat, model_alias: alias, invite_code }),
             signal: controller.signal,
           });
           clearTimeout(timer);
@@ -207,6 +224,39 @@ async function initModelSelector() {
               _setAskButtonState(askLlmBtn, 'idle', 'Ask once');
             }
           }, 1200);
+        }
+      };
+    }
+
+    // Initialize invite code input
+    const inviteCodeEl = document.getElementById('inviteCodeInput');
+    if (inviteCodeEl) {
+      const storedInviteCode = _getStoredStr(STORAGE_KEYS.inviteCode, '');
+      if (storedInviteCode) {
+        inviteCodeEl.value = storedInviteCode;
+      }
+
+      // Debounced validation on input
+      let inviteDebounce = null;
+      inviteCodeEl.oninput = () => {
+        const code = inviteCodeEl.value.trim().toUpperCase();
+        _setStoredStr(STORAGE_KEYS.inviteCode, code);
+        if (inviteDebounce) clearTimeout(inviteDebounce);
+        if (!code) {
+          _setInviteStatus('');
+          return;
+        }
+        _setInviteStatus('pending');
+        inviteDebounce = setTimeout(() => {
+          _sendClientSettings();
+        }, 500);
+      };
+
+      // Also validate on blur
+      inviteCodeEl.onblur = () => {
+        const code = inviteCodeEl.value.trim().toUpperCase();
+        if (code) {
+          _sendClientSettings();
         }
       };
     }
@@ -394,6 +444,17 @@ function processMessage(msg) {
       
       audioManager.playAction(action_type);
       renderer.announce(actionText);
+      break;
+    }
+    case 'client_settings_ack': {
+      // Handle invite code validation feedback
+      if (msg.invite_valid !== undefined) {
+        _setInviteStatus(msg.invite_valid ? 'valid' : 'invalid');
+      }
+      // Optionally log errors
+      if (msg.error) {
+        renderer.log(`Settings error: ${msg.error}`);
+      }
       break;
     }
     default:
