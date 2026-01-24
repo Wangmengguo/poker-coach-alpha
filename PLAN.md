@@ -201,6 +201,50 @@ This document captures the staged plan from MVP to V3, with concrete interfaces,
 - Add Continue Next Hand flow (REST endpoint + client button); remove auto-advance between hands.
 - Update session termination: human busts OR all bots bust OR max_hands.
 
+## Immediate next steps (MVP hardening: do these before cloud rollout)
+
+### 1) Per-table lock (serialise all state mutations)
+
+Goal: prevent race conditions when multiple WebSocket clients and/or REST calls hit the same in-memory table concurrently.
+
+Scope (must be under the same `asyncio.Lock` per `table_id`):
+- WS action handling: validate -> apply_action -> advance -> broadcast snapshots.
+- REST session lifecycle: `/tables/{id}/start`, `/tables/{id}/next`, `/tables/{id}/restart` (and any future state-mutating endpoints).
+- Bot turn execution loops (if bots can act asynchronously).
+
+Acceptance criteria:
+- No concurrent mutation: for a single table, engine state changes are strictly serialised (no interleaved apply/advance).
+- Robust under multi-client: 2+ WebSocket connections to the same table can spam actions without crashing the server.
+- Idempotency preserved: duplicate `action_id` is still ignored and does not block subsequent actions.
+- Tests:
+  - Add an integration test that sends concurrent actions (same table) and asserts:
+    - server does not throw, seq is monotonic, and table snapshot remains internally consistent.
+    - exactly one of duplicate `action_id` mutations is applied.
+
+### 2) Docker + LLM + invite end-to-end (E2E) rollout checklist
+
+Goal: make the "cloud deploy with invites" path repeatable and verifiable.
+
+Deliverables:
+- Deployment guide updates: document "Docker + directly enable LLM" and a "LLM + invite" verification checklist.
+- A small, copy-pastable smoke-test section (manual is OK for MVP) that validates:
+  - backend reachable through Nginx at `/cards/`
+  - WebSocket upgrade works at `/cards/ws/...`
+  - LLM provider is recognised (server-side)
+  - invite gating works for both REST and WS-driven advice
+  - invite revocation takes effect without requiring a full server restart
+
+Acceptance criteria (smoke tests):
+- After `docker compose up -d --build` with `.env` configured:
+  - `GET http://127.0.0.1:8010/cards/settings/ai_model` returns `llm_available: true`.
+- Invite gating:
+  - `POST /cards/tables/{id}/ai_advice/llm` without invite returns `403 invite_code_required`.
+  - With a valid invite returns 200 and advice payload is present.
+- Revocation:
+  - After revoking a previously-valid invite, subsequent advice attempts fail (403 for REST; WS advice degrades with `reason=invite_code_required`).
+- Persistence:
+  - `./data/invites.db` survives container restart and the invite list remains intact.
+
 ## Non-goals (MVP)
 - No auth, no persistence, no money handling, no rake, no multi-table.
 - No action timeouts, no reconnect/diff-resume.

@@ -135,6 +135,17 @@ _engines: Dict[str, TableEngine] = {
     DEFAULT_TABLE_ID: TableEngine(EngineConfig(session_id=DEFAULT_TABLE_ID))
 }
 
+# Per-table locks for serializing state mutations.
+# NOTE: Only works with --workers 1 (single process). Multi-worker deployments
+# would need Redis/DB-based locking.
+_table_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_table_lock(table_id: str) -> asyncio.Lock:
+    """Get or create an asyncio.Lock for a specific table."""
+    return _table_locks.setdefault(table_id, asyncio.Lock())
+
+
 # Simple in-memory cache for hand-strength results keyed by table/hand/street/hero state
 _hand_strength_cache: Dict[tuple, HandStrengthResult] = {}
 _ai_provider = get_ai_provider_from_env()
@@ -166,30 +177,72 @@ class AiAdviceRequestBody(BaseModel):
 
 
 async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
-    engine = _engines.get(table_id)
-    if not engine or engine.state is None:
-        return
-    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
-    if idx is None:
-        return
-    try:
-        positions_map = None
+    """Generate and broadcast AI advice for the acting seat.
+
+    Acquires per-table lock only for reading state and getting seq number.
+    LLM calls and broadcasting happen outside the lock.
+    """
+    # Gather state under lock
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine or engine.state is None:
+            return
+        idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+        if idx is None:
+            return
         try:
-            positions_map = engine._positions_map()  # type: ignore[attr-defined]
-        except Exception:
             positions_map = None
-        dc, _payload = compose_analysis(
-            engine.state,
-            idx,
-            seat,
-            session_stats=getattr(engine, "session_stats", None),
-            positions_map=positions_map,
-            include_hand_strength=False,
-        )
-        legal_actions = engine.legal_actions()
-        history = getattr(engine, "action_history", None)
-        conns = list(manager.active_connections.get(table_id, []))
-        for ws in conns:
+            try:
+                positions_map = engine._positions_map()  # type: ignore[attr-defined]
+            except Exception:
+                positions_map = None
+            dc, _payload = compose_analysis(
+                engine.state,
+                idx,
+                seat,
+                session_stats=getattr(engine, "session_stats", None),
+                positions_map=positions_map,
+                include_hand_strength=False,
+            )
+            legal_actions = engine.legal_actions()
+            history = getattr(engine, "action_history", None)
+            conns = list(manager.active_connections.get(table_id, []))
+            # Get seq numbers for each connection under lock
+            conn_seqs = [(ws, engine.next_sequence()) for ws in conns]
+        except Exception:
+            # On error, get a seq for error broadcast
+            try:
+                error_seq = engine.next_sequence()
+            except Exception:
+                error_seq = 0
+            conn_seqs = []
+            dc = None  # type: ignore
+            legal_actions = []
+            history = None
+
+    # If we failed to gather state, broadcast error
+    if dc is None:
+        try:
+            msg = {
+                "type": "ai_advice",
+                "seq": error_seq,
+                "to_act": seat,
+                "advice": {
+                    "recommended_action": None,
+                    "secondary_action": None,
+                    "confidence": None,
+                    "explanation": None,
+                    "reason": "error",
+                },
+            }
+            await manager.broadcast(table_id, msg)
+        except Exception:
+            pass
+        return
+
+    # Process each connection outside the lock (LLM calls are slow)
+    for ws, seq in conn_seqs:
+        try:
             settings = manager.get_settings(ws)
             advice = None
             # Only call the LLM if:
@@ -215,7 +268,7 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
                     advice.reason = "dummy_provider"
             msg = {
                 "type": "ai_advice",
-                "seq": engine.next_sequence(),
+                "seq": seq,
                 "to_act": seat,
                 "advice": {
                     "recommended_action": advice.recommended_action,
@@ -226,21 +279,6 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
                 },
             }
             await manager.send(ws, msg)
-    except Exception:
-        try:
-            msg = {
-                "type": "ai_advice",
-                "seq": engine.next_sequence(),
-                "to_act": seat,
-                "advice": {
-                    "recommended_action": None,
-                    "secondary_action": None,
-                    "confidence": None,
-                    "explanation": None,
-                    "reason": "error",
-                },
-            }
-            await manager.broadcast(table_id, msg)
         except Exception:
             pass
 
@@ -248,18 +286,20 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
 async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
     """Compute hand strength asynchronously and broadcast an analysis update.
 
-    Time-budgeted to ~100ms; if it times out or fails, send a degraded/null payload.
+    Time-budgeted to ~300ms; if it times out or fails, send a degraded/null payload.
+    Acquires per-table lock only for reading state and getting seq number.
     """
-    engine = _engines.get(table_id)
-    if not engine or engine.state is None:
-        return
-    # Map seat -> current state index
-    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
-    if idx is None:
-        return
-    # Compute with timeout and offload to a thread
-    try:
-        import anyio
+    import anyio
+
+    # Gather state and seq under lock
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine or engine.state is None:
+            return
+        # Map seat -> current state index
+        idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+        if idx is None:
+            return
 
         # Precompute live players for better fallback info
         try:
@@ -296,13 +336,12 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
         except Exception:
             cache_key = None
 
-        # Per-street sample_count budget tuned for a ~300ms time-box per
-        # evaluation on a typical dev machine.
+        # Per-street sample_count budget
         try:
             street_idx = getattr(engine.state, "street_index", None)
         except Exception:
             street_idx = None
-        if street_idx == 0:  # preflop (lookup, kept for API symmetry)
+        if street_idx == 0:  # preflop
             sample_count = 400
         elif street_idx == 1:  # flop
             sample_count = 400
@@ -311,6 +350,14 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
         else:  # river or unknown
             sample_count = 400
 
+        # Get seq under lock
+        seq = engine.next_sequence()
+
+        # Copy state reference for computation outside lock
+        state_for_compute = engine.state
+
+    # Compute outside the lock (this is the slow part)
+    try:
         # Cache hit: reuse previous result
         if cache_key is not None and cache_key in _hand_strength_cache:
             result = _hand_strength_cache[cache_key]
@@ -319,7 +366,7 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
             # Compute with timeout and offload to a thread
             with anyio.move_on_after(0.3) as scope:  # 300ms budget
                 result = await anyio.to_thread.run_sync(
-                    compute_hand_strength, engine.state, idx, sample_count
+                    compute_hand_strength, state_for_compute, idx, sample_count
                 )
             degraded = False
             if scope.cancel_called:  # timed out
@@ -338,7 +385,7 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
 
         msg = {
             "type": "analysis",
-            "seq": engine.next_sequence(),
+            "seq": seq,
             "to_act": seat,
             "hand_strength": {
                 "hand_strength_pct": result.hand_strength_pct,
@@ -356,7 +403,7 @@ async def _broadcast_hand_strength(table_id: str, seat: int) -> None:
                 table_id,
                 {
                     "type": "analysis",
-                    "seq": engine.next_sequence(),
+                    "seq": seq,
                     "to_act": seat,
                     "hand_strength": {
                         "hand_strength_pct": None,
@@ -436,9 +483,6 @@ def join_table(table_id: str):
 @app.post("/tables/{table_id}/ai_advice/llm")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/ai_advice/llm")
 async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
-    engine = _engines.get(table_id)
-    if not engine or engine.state is None:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
     if isinstance(_ai_provider, DummyProvider):
         return JSONResponse(status_code=400, content={"error": "llm_not_configured"})
 
@@ -448,46 +492,64 @@ async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
         return JSONResponse(status_code=403, content={"error": "invite_code_required"})
 
     seat = int(body.seat or 1)
-    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
-    if idx is None:
-        return JSONResponse(status_code=400, content={"error": "invalid_seat"})
 
-    try:
-        positions_map = None
+    alias = body.model_alias
+    if alias is not None and alias not in set(get_allowed_model_aliases()):
+        return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
+
+    # Gather state under lock (fast) so we don't hold it during the LLM call.
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine or engine.state is None:
+            return JSONResponse(status_code=404, content={"error": "table not found"})
+
+        idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+        if idx is None:
+            return JSONResponse(status_code=400, content={"error": "invalid_seat"})
+
         try:
-            positions_map = engine._positions_map()  # type: ignore[attr-defined]
-        except Exception:
             positions_map = None
-        dc, _payload = compose_analysis(
-            engine.state,
-            idx,
-            seat,
-            session_stats=getattr(engine, "session_stats", None),
-            positions_map=positions_map,
-            include_hand_strength=False,
-        )
-        legal_actions = engine.legal_actions()
-        history = getattr(engine, "action_history", None)
-        alias = body.model_alias
-        if alias is not None and alias not in set(get_allowed_model_aliases()):
-            return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
+            try:
+                positions_map = engine._positions_map()  # type: ignore[attr-defined]
+            except Exception:
+                positions_map = None
+            dc, _payload = compose_analysis(
+                engine.state,
+                idx,
+                seat,
+                session_stats=getattr(engine, "session_stats", None),
+                positions_map=positions_map,
+                include_hand_strength=False,
+            )
+            legal_actions = engine.legal_actions()
+            history = getattr(engine, "action_history", None)
+        except Exception:
+            return JSONResponse(status_code=500, content={"error": "llm_request_failed"})
 
+    # LLM call outside lock.
+    try:
         async with use_model_alias(alias):
             advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
-        return {
-            "type": "ai_advice",
-            "seq": engine.next_sequence(),
-            "to_act": seat,
-            "advice": {
-                "recommended_action": advice.recommended_action,
-                "secondary_action": advice.secondary_action,
-                "confidence": advice.confidence,
-                "explanation": advice.explanation,
-                "reason": advice.reason,
-            },
-        }
     except Exception:
         return JSONResponse(status_code=500, content={"error": "llm_request_failed"})
+
+    # Get seq under lock (next_sequence mutates engine state).
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        seq = engine.next_sequence() if engine is not None else 0
+
+    return {
+        "type": "ai_advice",
+        "seq": seq,
+        "to_act": seat,
+        "advice": {
+            "recommended_action": advice.recommended_action,
+            "secondary_action": advice.secondary_action,
+            "confidence": advice.confidence,
+            "explanation": advice.explanation,
+            "reason": advice.reason,
+        },
+    }
 
 
 async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
@@ -497,55 +559,60 @@ async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
 
 @app.post("/tables/{table_id}/start")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/start")
-def start_session(table_id: str):
-    engine = _engines.get(table_id)
-    if not engine:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
-    # Prevent starting a new session while one is already active; callers
-    # should use /restart if they need to force-reset mid-session.
-    if getattr(engine, "session_active", False):
-        return JSONResponse(status_code=400, content={"error": "session already active"})
-    engine.start_session()
-    # Advance until prompt or hand end and broadcast
-    messages, _ = engine.advance(human_seat=1)
-    for m in messages:
-        # best-effort broadcast
-        try:
-            import anyio
+async def start_session(table_id: str):
+    # Acquire lock for state mutation
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine:
+            return JSONResponse(status_code=404, content={"error": "table not found"})
+        # Prevent starting a new session while one is already active; callers
+        # should use /restart if they need to force-reset mid-session.
+        if getattr(engine, "session_active", False):
+            return JSONResponse(status_code=400, content={"error": "session already active"})
+        engine.start_session()
+        # Advance until prompt or hand end
+        messages, _ = engine.advance(human_seat=1)
+        hand_id = f"h_{engine.hand_index:05d}"
 
-            anyio.from_thread.run(manager.broadcast, table_id, m)
-            # After broadcasting a prompt, compute hand strength asynchronously
+    # Broadcast outside the lock
+    for m in messages:
+        try:
+            await manager.broadcast(table_id, m)
+            # After broadcasting a prompt, schedule async tasks
             if isinstance(m, dict) and m.get("type") == "prompt":
-                anyio.from_thread.run(_schedule_prompt_tasks, table_id, m.get("to_act", 1))
+                asyncio.create_task(_schedule_prompt_tasks(table_id, m.get("to_act", 1)))
         except Exception:
             pass
-    return {"hand_id": f"h_{engine.hand_index:05d}"}
+    return {"hand_id": hand_id}
 
 
 @app.post("/tables/{table_id}/next")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/next")
-def next_hand(table_id: str):
-    engine = _engines.get(table_id)
-    if not engine or engine.state is None:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
-    ok, reason = engine.start_next_hand()
-    if not ok:
-        if reason:
-            # If session ended or cannot proceed, notify caller
-            return JSONResponse(status_code=400, content={"error": reason})
-        return JSONResponse(status_code=400, content={"error": "cannot start next hand"})
-    # Advance and broadcast
-    messages, _ = engine.advance(human_seat=1)
+async def next_hand(table_id: str):
+    # Acquire lock for state mutation
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine or engine.state is None:
+            return JSONResponse(status_code=404, content={"error": "table not found"})
+        ok, reason = engine.start_next_hand()
+        if not ok:
+            if reason:
+                # If session ended or cannot proceed, notify caller
+                return JSONResponse(status_code=400, content={"error": reason})
+            return JSONResponse(status_code=400, content={"error": "cannot start next hand"})
+        # Advance
+        messages, _ = engine.advance(human_seat=1)
+        hand_id = f"h_{engine.hand_index:05d}"
+
+    # Broadcast outside the lock
     for m in messages:
         try:
-            import anyio
-
-            anyio.from_thread.run(manager.broadcast, table_id, m)
+            await manager.broadcast(table_id, m)
             if isinstance(m, dict) and m.get("type") == "prompt":
-                anyio.from_thread.run(_schedule_prompt_tasks, table_id, m.get("to_act", 1))
+                asyncio.create_task(_schedule_prompt_tasks(table_id, m.get("to_act", 1)))
         except Exception:
             pass
-    return {"hand_id": f"h_{engine.hand_index:05d}"}
+    return {"hand_id": hand_id}
 
 
 @app.get("/tables/{table_id}/state")
@@ -560,22 +627,27 @@ def get_state(table_id: str):
 
 @app.post("/tables/{table_id}/restart")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/restart")
-def restart_session(table_id: str):
-    engine = _engines.get(table_id)
-    if not engine:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
-    # Restart fresh session (keep same session_id)
-    engine.restart_session()
-    # Advance until prompt or hand end and broadcast
-    messages, _ = engine.advance(human_seat=1)
+async def restart_session(table_id: str):
+    # Acquire lock for state mutation
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine:
+            return JSONResponse(status_code=404, content={"error": "table not found"})
+        # Restart fresh session (keep same session_id)
+        engine.restart_session()
+        # Advance until prompt or hand end
+        messages, _ = engine.advance(human_seat=1)
+        hand_id = f"h_{engine.hand_index:05d}"
+
+    # Broadcast outside the lock
     for m in messages:
         try:
-            import anyio
-
-            anyio.from_thread.run(manager.broadcast, table_id, m)
+            await manager.broadcast(table_id, m)
+            if isinstance(m, dict) and m.get("type") == "prompt":
+                asyncio.create_task(_schedule_prompt_tasks(table_id, m.get("to_act", 1)))
         except Exception:
             pass
-    return {"hand_id": f"h_{engine.hand_index:05d}"}
+    return {"hand_id": hand_id}
 
 
 @app.websocket("/ws/tables/{table_id}")
@@ -639,90 +711,96 @@ async def ws_table(websocket: WebSocket, table_id: str):
                 )
                 continue
             if data.get("type") == "action":
-                # Apply and advance
-                engine = _engines.get(table_id)
-                if not engine or engine.state is None:
-                    error_msg = Error(message="table not ready")
-                    await websocket.send_json(error_msg.model_dump())
-                    continue
+                # Process action under lock
+                msgs_to_broadcast: list = []
+                action_notification: Optional[dict] = None
+                error_to_send: Optional[Error] = None
+                skip_action = False
 
-                # Validate and parse client action
-                try:
-                    client_action = ClientAction(**data)
-                    action = client_action.action.model_dump(exclude_unset=True)
-
-                    # Check action idempotency
-                    if engine.bot_manager.is_action_processed(client_action.action_id):
-                        continue  # Skip already processed action
-
-                    # Validate against legal actions
-                    legal_actions = engine.legal_actions()
-                    if not validate_action_against_legal(client_action.action, legal_actions):
-                        # Fallback: if it's a raise_to with amount and the engine accepts it, allow it
+                async with _get_table_lock(table_id):
+                    engine = _engines.get(table_id)
+                    if not engine or engine.state is None:
+                        error_to_send = Error(message="table not ready")
+                    else:
+                        # Validate and parse client action
                         try:
-                            if action.get("type") == "raise_to" and "amount" in action:
-                                amt = int(action.get("amount"))
-                                if engine._try_raise_to(amt):  # type: ignore[attr-defined]
-                                    pass  # accept
-                                else:
-                                    error_msg = Error(message="illegal action")
-                                    await websocket.send_json(error_msg.model_dump())
-                                    continue
+                            client_action = ClientAction(**data)
+                            action = client_action.action.model_dump(exclude_unset=True)
+
+                            # Check action idempotency
+                            if engine.bot_manager.is_action_processed(client_action.action_id):
+                                skip_action = True  # Skip already processed action
                             else:
-                                error_msg = Error(message="illegal action")
-                                await websocket.send_json(error_msg.model_dump())
-                                continue
-                        except Exception:
-                            error_msg = Error(message="illegal action")
-                            await websocket.send_json(error_msg.model_dump())
-                            continue
+                                # Validate against legal actions
+                                legal_actions = engine.legal_actions()
+                                if not validate_action_against_legal(
+                                    client_action.action, legal_actions
+                                ):
+                                    # Fallback: if it's a raise_to with amount and the engine accepts it, allow it
+                                    try:
+                                        if action.get("type") == "raise_to" and "amount" in action:
+                                            amt = int(action.get("amount"))
+                                            if not engine._try_raise_to(amt):  # type: ignore[attr-defined]
+                                                error_to_send = Error(message="illegal action")
+                                        else:
+                                            error_to_send = Error(message="illegal action")
+                                    except Exception:
+                                        error_to_send = Error(message="illegal action")
 
-                    # Mark action as processed for idempotency
-                    engine.bot_manager.add_processed_action(client_action.action_id)
+                                if error_to_send is None and not skip_action:
+                                    # Mark action as processed for idempotency
+                                    engine.bot_manager.add_processed_action(client_action.action_id)
 
-                except Exception as e:
-                    error_msg = Error(message=f"invalid action format: {e}")
-                    await websocket.send_json(error_msg.model_dump())
+                                    # Apply action
+                                    try:
+                                        engine.apply_action(action)
+                                        action_notification = {
+                                            "type": "action_taken",
+                                            "seat": client_action.seat,
+                                            "player_id": engine.player_ids[client_action.seat - 1],
+                                            "action_type": action.get("type", "unknown"),
+                                            "amount": action.get("amount"),
+                                            "is_bot": False,
+                                        }
+                                    except Exception as e:
+                                        import traceback as _tb
+
+                                        error_to_send = Error(
+                                            message=f"apply_action failed: {e}",
+                                            trace=_tb.format_exc(limit=10),
+                                        )
+
+                                    # Advance engine if apply succeeded
+                                    if error_to_send is None:
+                                        try:
+                                            msgs_to_broadcast, _prompt = engine.advance(
+                                                human_seat=1
+                                            )
+                                        except Exception as e:
+                                            import traceback as _tb
+
+                                            try:
+                                                snap = engine.build_table_snapshot()
+                                            except Exception:
+                                                snap = None
+                                            error_to_send = Error(
+                                                message=f"advance failed: {e}",
+                                                trace=_tb.format_exc(limit=20),
+                                                snapshot=snap,
+                                            )
+
+                        except Exception as e:
+                            error_to_send = Error(message=f"invalid action format: {e}")
+
+                # Outside lock: send responses and broadcast
+                if skip_action:
                     continue
-
-                try:
-                    engine.apply_action(action)
-                    # Send action notification for human action
-                    human_action_notification = {
-                        "type": "action_taken",
-                        "seat": client_action.seat,
-                        "player_id": engine.player_ids[client_action.seat - 1],
-                        "action_type": action.get("type", "unknown"),
-                        "amount": action.get("amount"),
-                        "is_bot": False,
-                    }
-                    await websocket.send_json(human_action_notification)
-                except Exception as e:
-                    import traceback as _tb
-
-                    error_msg = Error(
-                        message=f"apply_action failed: {e}", trace=_tb.format_exc(limit=10)
-                    )
-                    await websocket.send_json(error_msg.model_dump())
+                if error_to_send is not None:
+                    await websocket.send_json(error_to_send.model_dump())
                     continue
-                try:
-                    msgs, _prompt = engine.advance(human_seat=1)
-                except Exception as e:
-                    import traceback as _tb
-
-                    # Try to include a snapshot for context
-                    try:
-                        snap = engine.build_table_snapshot()
-                    except Exception:
-                        snap = None
-                    error_msg = Error(
-                        message=f"advance failed: {e}",
-                        trace=_tb.format_exc(limit=20),
-                        snapshot=snap,
-                    )
-                    await websocket.send_json(error_msg.model_dump())
-                    continue
-                for m in msgs:
+                if action_notification is not None:
+                    await websocket.send_json(action_notification)
+                for m in msgs_to_broadcast:
                     await manager.broadcast(table_id, m)
                     if isinstance(m, dict) and m.get("type") == "prompt":
                         # Schedule async hand-strength compute without blocking UI

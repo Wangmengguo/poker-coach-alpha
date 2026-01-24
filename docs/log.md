@@ -288,3 +288,68 @@ Date: 2026-01-24
   - Updated `.gitignore` to ignore `data/` (SQLite persistence) and `.env`.
 - Self-check:
   - `pytest -q` (53 passed).
+
+- Invite code / Docker deploy hardening (follow-up):
+  - Fixed async-path invite validation in `app/main.py` by offloading SQLite validation to a thread (`anyio.to_thread.run_sync`) and re-validating per WS advice broadcast so revoked codes stop working without reconnect.
+  - Reduced SQLite write amplification: `InviteCodeStore.validate_code(...)` now rate-limits `last_used_at` updates (at most once per minute per code).
+  - Docker safety + correctness:
+    - `Dockerfile` now installs `build-essential` to avoid build failures when wheels need compilation.
+    - `docker-compose.yml` now binds to `127.0.0.1:8010` by default (configurable via `POKER_BIND_ADDR`) to avoid exposing port 8010 publicly when using Nginx.
+    - `.env.example` no longer uses key-shaped placeholders; added `POKER_BIND_ADDR` and clarified default `AI_PROVIDER=dummy`.
+  - Docs updates:
+    - Expanded `docs/DEPLOY_EXPLAIN1THING_TOP_CARDS.md` with Docker + "directly enable LLM" steps (`AI_PROVIDER=openai`, `.env` permissions), plus an end-to-end "LLM + invite" verification checklist.
+  - Tooling/compat:
+    - Updated `uv.lock` `requires-python` to `>=3.10` to match repo/runtime expectations.
+  - Self-check:
+    - `.venv/bin/pytest -q` (53 passed).
+
+- MVP hardening plan (pre-cloud rollout):
+  - Updated `PLAN.md` with a new "MVP hardening" section that prioritizes:
+    - 1) per-table `asyncio.Lock` to serialize *all* state mutations across WS actions, REST lifecycle endpoints, and bot turns.
+    - 2) a Docker + LLM + invite end-to-end rollout checklist with concrete smoke tests.
+  - Added explicit acceptance criteria to the plan:
+    - Concurrency: no interleaved state mutations, resilient under multi-client spam, idempotent `action_id` preserved, plus a new concurrent-actions integration test.
+    - Deployment: `llm_available=true` check, invite required/valid paths, revoke takes effect, and `./data/invites.db` persists across restarts.
+
+- P0: Per-table lock implementation:
+  - Added `_table_locks: Dict[str, asyncio.Lock]` and `_get_table_lock(table_id)` helper using `setdefault` pattern.
+  - Converted REST endpoints `/start`, `/next`, `/restart` from sync `def` to `async def`.
+  - Removed `anyio.from_thread.run(...)` calls; now use direct `await manager.broadcast()` and `asyncio.create_task()`.
+  - Lock coverage:
+    - `/start`, `/next`, `/restart`: lock inside for state mutation, broadcast outside.
+    - WS `action` handling: lock inside for validate→apply→advance, broadcast outside.
+    - `_broadcast_ai_advice`, `_broadcast_hand_strength`: lock inside for `next_sequence()` and state reads, LLM/compute/broadcast outside.
+  - Added note in code: "Only works with --workers 1 (single process)."
+  - Added `tests/test_concurrent_actions.py` with 10 tests covering lock creation, reuse, sequential operations, and idempotency.
+  - Self-check: `pytest -q` (63 passed).
+
+- P1: E2E check script:
+  - Created `tools/e2e_check.py` with full verification flow:
+    - Health check (`GET /`), AI model settings, start session.
+    - WS snapshot and invite validation (requires `websockets` package).
+    - LLM REST advice with/without invite code, revoke invalidation check.
+  - CLI options: `--base-url`, `--timeout`, `--skip-llm`, `--skip-ws`, `-v/--verbose`.
+  - Important caveat documented: script must run on same machine/container (SQLite access).
+  - Usage: `python -m tools.e2e_check` or `docker compose exec poker python -m tools.e2e_check`.
+
+- Follow-up fixes (verification pass):
+  - Fixed `tools/e2e_check.py` WS invite validation to ignore interleaved `analysis/ai_advice` messages and wait for `client_settings_ack`.
+  - Locked `POST /tables/{table_id}/ai_advice/llm` seq generation (`engine.next_sequence()`) and moved state reads under per-table lock (LLM call remains outside lock).
+  - Self-check: `pytest -q` (65 passed); `python -m tools.e2e_check` passes against a local dummy-provider server.
+
+- MVP hardening execution + review-team amendments (P0/P1):
+  - Agent implementation (initial):
+    - Implemented per-table lock (`_table_locks` + `_get_table_lock(table_id)`) to serialize all in-memory engine mutations for a single table.
+    - Converted state-mutating REST endpoints to `async def` and ensured: mutate under lock, broadcast outside lock:
+      - `POST /tables/{id}/start`, `POST /tables/{id}/next`, `POST /tables/{id}/restart`.
+    - Updated WS action path to do: validate/apply/advance under lock, broadcast outside lock.
+    - Updated `_broadcast_ai_advice` / `_broadcast_hand_strength` to acquire seq/state under lock, and keep LLM/compute/send outside lock.
+    - Added `tools/e2e_check.py` to standardize pre-rollout checks (health, WS snapshot, invite validation, LLM REST gating, revoke invalidation).
+    - Added test coverage for lock/idempotency behaviors in `tests/test_concurrent_actions.py`.
+  - Dev/Review team fixes (stability + completeness):
+    - Fixed `tools/e2e_check.py` to ignore interleaved WS messages and wait for `client_settings_ack` (protocol-level stability).
+    - Fixed `POST /tables/{id}/ai_advice/llm` to avoid `engine.next_sequence()` outside lock by moving seq generation (and state reads) under the per-table lock while keeping the LLM call outside lock.
+    - Updated concurrency-oriented tests to use `httpx.AsyncClient` + `ASGITransport` where appropriate, improving determinism of acceptance checks.
+  - Verified in workspace:
+    - Tests: `.venv/bin/pytest -q` (65 passed).
+    - E2E (dummy provider server): `python -m tools.e2e_check --base-url http://127.0.0.1:8012/cards` (passes; LLM checks are skip/ok under dummy provider).
