@@ -81,6 +81,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     store = InviteCodeStore()
     code = args.code.strip().upper()
 
+    # Validate first (updates last_used_at on success)
+    is_valid = store.validate_code(code)
+
     info = store.get_code(code)
     if info is None:
         print(f"Code not found: {code}")
@@ -92,13 +95,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"Last used: {info['last_used_at'] or 'never'}")
     print(f"Note: {info['note'] or '-'}")
 
-    # Also validate (this updates last_used_at)
-    if info["is_active"]:
+    if is_valid:
         print("\n[OK] This code is valid and can be used.")
         return 0
-    else:
-        print("\n[WARN] This code has been revoked and cannot be used.")
-        return 1
+    print("\n[WARN] This code is not valid (missing or revoked).")
+    return 1
 
 
 def main() -> int:

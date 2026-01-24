@@ -4,6 +4,27 @@ Simple, understandable scaffold for a Texas Hold’em MVP using FastAPI + WebSoc
 
 ## Quickstart
 
+### Option 1: Docker (Recommended for Production)
+
+```bash
+# 1. Copy environment variables template
+cp .env.example .env
+# For heuristic-only mode (no external calls): keep `AI_PROVIDER=dummy` and `OPENAI_API_KEY=`
+# To enable LLM: set `AI_PROVIDER=openai` and fill `OPENAI_API_KEY`
+
+# 2. Start with Docker Compose
+docker compose up -d --build
+
+# 3. Access the app
+# Open http://localhost:8010/cards/
+```
+
+Note: `docker-compose.yml` binds the backend to `127.0.0.1:8010` by default (recommended). To expose it publicly, set `POKER_BIND_ADDR=0.0.0.0`.
+
+See [Docker Deployment](#docker-deployment) for more details.
+
+### Option 2: Local Development
+
 - Python 3.10+
 
 ```bash
@@ -77,6 +98,118 @@ curl -X POST http://localhost:8000/settings/ai_model \
 ```
 
 The frontend can call the same endpoint to implement a simple model selector (e.g. a dropdown showing `claude-4.5-sonnet`, `deepseek-chat`, etc.). Only the model name travels over the wire; keys and provider-specific configuration stay on the backend.
+
+## Invite Code System
+
+The AI Coach LLM features are protected by an invite code system. Users must enter a valid invite code in the frontend to access LLM-powered advice.
+
+### Managing Invite Codes
+
+**Using Docker Compose:**
+```bash
+# Create a new invite code
+docker compose exec poker python -m tools.manage_invites create --note "For friend A"
+
+# List all invite codes
+docker compose exec poker python -m tools.manage_invites list
+
+# Revoke an invite code
+docker compose exec poker python -m tools.manage_invites revoke POKER-ABC123
+
+# Check if a code is valid
+docker compose exec poker python -m tools.manage_invites check POKER-ABC123
+```
+
+**Using Local Python:**
+```bash
+# Activate your virtual environment first
+source .venv/bin/activate
+
+# Create a new invite code
+python -m tools.manage_invites create --note "For friend A"
+
+# List all invite codes
+python -m tools.manage_invites list
+
+# Revoke an invite code
+python -m tools.manage_invites revoke POKER-ABC123
+
+# Check if a code is valid
+python -m tools.manage_invites check POKER-ABC123
+```
+
+Invite codes are stored in a SQLite database (`data/invites.db` by default). The database is automatically created on first use.
+
+### Using Invite Codes
+
+1. Start a game session
+2. Enter your invite code in the "Invite Code" input field in the frontend
+3. Enable the "LLM" toggle
+4. Click "Ask once" to get AI-powered advice
+
+Without a valid invite code, the AI Coach will use heuristic-only mode (no LLM calls).
+
+## Docker Deployment
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- (Optional) API keys for LLM features in `.env` file
+
+### Quick Start
+
+1. **Copy environment template:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit `.env`** and configure:
+   - Heuristic-only: `AI_PROVIDER=dummy` and `OPENAI_API_KEY=`
+   - Enable LLM: `AI_PROVIDER=openai` and `OPENAI_API_KEY=your-key`
+   - `OPENAI_API_BASE=https://your-gateway.com/v1` (optional)
+   - `AI_MODEL_ALIAS=gpt-5.1-chat-latest` (optional)
+
+3. **Start the service:**
+   ```bash
+   docker compose up -d --build
+   ```
+
+4. **Access the app:**
+   - Web UI: http://localhost:8010/cards/
+   - Health check: http://localhost:8010/cards/
+
+### Managing the Service
+
+```bash
+# View logs
+docker compose logs -f poker
+
+# Stop the service
+docker compose down
+
+# Restart the service
+docker compose restart poker
+
+# Update and rebuild
+git pull
+docker compose up -d --build
+```
+
+### Data Persistence
+
+- Invite codes database: `./data/invites.db` (mounted as volume)
+- Logs: Inside container (use `docker compose logs` to view)
+
+### Production Considerations
+
+- The Dockerfile uses `--workers 1` because game state is stored in memory
+- Resource limits are set in `docker-compose.yml` (adjust based on your server)
+- For production, consider:
+  - Using a reverse proxy (Nginx) for SSL/TLS
+  - Setting up proper backup for `./data` directory
+  - Configuring log rotation (already configured in docker-compose.yml)
+
+See `docs/DEPLOY_EXPLAIN1THING_TOP_CARDS.md` for a detailed production deployment guide with Nginx.
 
 ## Offline LLM vs bot simulation (testing)
 

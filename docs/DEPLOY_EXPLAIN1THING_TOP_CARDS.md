@@ -7,6 +7,20 @@
 - 支持 **WebSocket**（游戏实时通信）
 - 单实例（1C1G）以 **systemd** 管理进程，Nginx 反代
 
+## 部署方式选择
+
+本项目支持两种部署方式：
+
+1. **Docker 部署（推荐）**：使用 Docker Compose，更简单、隔离性更好
+   - 适合：快速部署、容器化环境、需要隔离的场景
+   - 详见：第 15 节「Docker 部署方式（替代方案）」
+
+2. **传统部署（systemd + venv）**：直接在服务器上运行 Python
+   - 适合：对 Docker 不熟悉、需要更多控制、资源受限的场景
+   - 详见：第 4-14 步（systemd + venv）
+
+> **提示**：两种方式都使用相同的 Nginx 配置，只是后端服务的运行方式不同。
+
 ---
 
 ## 0. 你的当前信息（已确认）
@@ -71,7 +85,12 @@
 
 本项目目前的实现是：**后端通过环境变量配置 provider/key**；前端只控制“是否启用 LLM 调用”开关。
 
-因此本次部署计划默认：**不启用 LLM**（后端保持 heuristic-only 模式），确保 MVP 上线最稳。
+因此本手册默认是：先确保服务稳定跑通（可以先不启用 LLM），然后再开启 LLM。
+
+如果你希望**直接启用 LLM**（你当前选择的方案）：
+
+- Docker 部署：见第 15.2.1（编辑 `.env`，设置 `AI_PROVIDER=openai` + `OPENAI_API_KEY`）
+- 传统部署：在 systemd service 里加 `Environment=AI_PROVIDER=openai` / `Environment=OPENAI_API_KEY=...`
 
 > 如果你确实要做“用户输入 key 并生效”，需要一个小功能迭代（我可以在后续给你一份设计/实现计划）。
 
@@ -605,4 +624,220 @@ sudo systemctl status poker-coach --no-pager
 > - 这是最快的“回到上一个已知可用版本”的方法。
 > - 如果你更新过程中改动了依赖（requirements），回滚后一般不需要重新 pip；若仍报依赖相关错误，再运行一次 `pip install -r requirements.txt` 即可。
 
+---
 
+## 15. Docker 部署方式（替代方案）
+
+如果你更喜欢使用 Docker 部署，可以按照以下步骤：
+
+### 15.1 安装 Docker
+
+```bash
+# 安装 Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# 安装 Docker Compose（如果未包含）
+sudo apt install -y docker-compose-plugin
+
+# Debian 12 安装的是 Compose plugin，命令是：docker compose ...
+# 如果你机器上是旧版 docker-compose 二进制，把下文的 "docker compose" 换成 "docker-compose" 即可。
+```
+
+### 15.2 拉取代码并配置
+
+```bash
+# 创建部署目录
+sudo mkdir -p /opt/poker-coach-alpha
+sudo chown -R $USER:$USER /opt/poker-coach-alpha
+cd /opt/poker-coach-alpha
+
+# 克隆代码
+git clone https://github.com/Wangmengguo/poker-coach-alpha.git .
+
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env（可选：如果要用 LLM 功能）
+nano .env
+```
+
+### 15.2.1 直接启用 LLM（OpenAI 兼容网关 / OpenAI）
+
+在服务器上编辑 `/opt/poker-coach-alpha/.env`，至少配置这些变量：
+
+```bash
+# 启用 LLM
+AI_PROVIDER=openai
+
+# 必填：你的 Key（不要提交到 git）
+OPENAI_API_KEY=YOUR_REAL_KEY
+
+# 可选：OpenAI 兼容网关（例如 oneapi / openrouter / 自建网关）
+# 如果你直连 OpenAI 官方，一般可以留空
+OPENAI_API_BASE=
+
+# 可选：默认模型别名（前端也可以切换）
+AI_MODEL_ALIAS=gpt-5.1-chat-latest
+
+# 可选：开启调试日志（上线初期建议开 1，确认 LLM 真在被调用；稳定后可改回 0）
+AI_COACH_DEBUG=1
+```
+
+建议把 `.env` 权限收紧，避免其他系统用户读取：
+
+```bash
+cd /opt/poker-coach-alpha
+chmod 600 .env
+```
+
+### 15.3 启动 Docker 服务
+
+```bash
+# 构建并启动（后台运行）
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f poker
+```
+
+> 安全提示：`docker-compose.yml` 默认把后端端口仅绑定到 `127.0.0.1:8010`，让公网只能通过 Nginx 访问 `/cards/`。
+> 如果你确实需要直接对外暴露 8010 端口（不推荐），可在 `.env` 里设置：`POKER_BIND_ADDR=0.0.0.0`。
+
+### 15.3.1 验证 LLM 已经被后端识别（不等于“用户可用”）
+
+后端是否识别到 LLM provider/key，可以在服务器本机跑：
+
+```bash
+curl -s http://127.0.0.1:8010/cards/settings/ai_model
+```
+
+你应该看到 `"llm_available": true`。
+
+注意：**即使 `llm_available=true`，没有邀请码也依然不会调用 LLM**（见第 16 节）。
+
+### 15.4 配置 Nginx
+
+Docker 部署使用相同的 Nginx 配置（见第 8 步），后端服务运行在 `127.0.0.1:8010`。
+
+### 15.5 Docker 管理命令
+
+```bash
+# 查看日志
+docker compose logs -f poker
+
+# 重启服务
+docker compose restart poker
+
+# 停止服务
+docker compose down
+
+# 更新代码后重启
+git pull
+docker compose up -d --build
+```
+
+---
+
+## 16. 邀请码管理
+
+本项目使用邀请码系统来控制 LLM AI Coach 功能的访问。部署后，你需要创建邀请码并分发给用户。
+
+### 16.1 创建邀请码
+
+**使用 Docker 部署：**
+```bash
+docker compose exec poker python -m tools.manage_invites create --note "For friend A"
+```
+
+**使用传统部署（systemd）：**
+```bash
+sudo -iu poker
+cd /opt/poker-coach-alpha
+source .venv/bin/activate
+python -m tools.manage_invites create --note "For friend A"
+exit
+```
+
+### 16.2 查看邀请码列表
+
+**使用 Docker：**
+```bash
+docker compose exec poker python -m tools.manage_invites list
+```
+
+**使用传统部署：**
+```bash
+sudo -iu poker
+cd /opt/poker-coach-alpha
+source .venv/bin/activate
+python -m tools.manage_invites list
+exit
+```
+
+### 16.3 撤销邀请码
+
+```bash
+# Docker
+docker compose exec poker python -m tools.manage_invites revoke POKER-ABC123
+
+# 传统部署
+sudo -iu poker
+cd /opt/poker-coach-alpha
+source .venv/bin/activate
+python -m tools.manage_invites revoke POKER-ABC123
+exit
+```
+
+### 16.4 检查邀请码有效性
+
+```bash
+# Docker
+docker compose exec poker python -m tools.manage_invites check POKER-ABC123
+
+# 传统部署
+sudo -iu poker
+cd /opt/poker-coach-alpha
+source .venv/bin/activate
+python -m tools.manage_invites check POKER-ABC123
+exit
+```
+
+### 16.5 邀请码数据库位置
+
+- **Docker 部署**：`./data/invites.db`（挂载在容器外）
+- **传统部署**：`/opt/poker-coach-alpha/data/invites.db`（或 `DATA_DIR` 环境变量指定的路径）
+
+### 16.6 用户如何使用邀请码
+
+1. 用户访问 `https://explain1thing.top/cards/`
+2. 在页面上的"Invite Code"输入框中输入邀请码
+3. 启用"LLM"开关
+4. 点击"Ask once"获取 AI 建议
+
+没有有效邀请码时，AI Coach 将使用启发式模式（不调用 LLM）。
+
+### 16.7（推荐）上线后做一次“LLM + 邀请码”端到端验证
+
+1) 在服务器上创建邀请码：
+
+```bash
+docker compose exec poker python -m tools.manage_invites create --note "self-check"
+```
+
+2) 浏览器打开 `https://explain1thing.top/cards/`：
+
+- 输入邀请码
+- 打开 LLM 开关
+- 点击 `Ask once`
+
+3) 同时在服务器上观察日志（确认确实发起了外部调用/没有报错）：
+
+```bash
+docker compose logs -f poker
+```
+
+如果看到 `invite_code_required` / `dummy_provider` 之类原因，说明仍在走非 LLM 路径：
+
+- `invite_code_required`：邀请码不对/未输入/已撤销
+- `dummy_provider`：`AI_PROVIDER` 仍是 dummy 或 key/base 配置不生效

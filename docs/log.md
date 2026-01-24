@@ -269,3 +269,22 @@ Date: 2025-12-30
   - Notes:
     - Existing root routes are kept for local dev/tests; isolation is achieved at the reverse-proxy layer by only exposing the `/cards/...` routes.
     - Lints checked for touched files; no issues. Pytest was not runnable on this machine (pytest not installed).
+
+Date: 2026-01-24
+
+- Invite code system (API protection for paid LLM calls):
+  - Added `poker/invite_codes.py` with `InviteCodeStore` (SQLite-backed) to create/list/revoke/validate invite codes; stores data in `DATA_DIR` (default `./data`) and updates `last_used_at` on successful validation.
+  - Added CLI tooling `tools/manage_invites.py`:
+    - `create --note ...`, `list`, `revoke <CODE>`, `check <CODE>`.
+- Backend gating for AI Coach LLM usage:
+  - Updated `app/main.py` WebSocket `client_settings` flow to accept `invite_code` and return `client_settings_ack` with `invite_valid`.
+  - Updated `_broadcast_ai_advice(...)` to only call the LLM when `llm_enabled` is true, provider is configured, and `invite_valid` is true; otherwise falls back to heuristic advice with `reason=invite_code_required` (or existing reasons).
+  - Updated `POST /tables/{table_id}/ai_advice/llm` to require `invite_code` (returns `403 {"error":"invite_code_required"}` when missing/invalid).
+- Frontend invite code UX:
+  - Updated `public/index.html` / `public/style.css` / `public/app.js` to add an Invite input pill, persist it in `localStorage`, send it via `client_settings`, and show validation status (✓/✗/…).
+  - Updated `Ask once` paid-call request to include `invite_code` in the POST body.
+- Docker deployment support:
+  - Added `Dockerfile`, `docker-compose.yml`, and `.env.example` for 2C2G deployment with persistent `./data` volume and env-based AI provider configuration.
+  - Updated `.gitignore` to ignore `data/` (SQLite persistence) and `.env`.
+- Self-check:
+  - `pytest -q` (53 passed).

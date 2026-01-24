@@ -2,26 +2,28 @@
 #
 # Usage:
 #   1. Create a .env file with your API keys (see .env.example)
-#   2. Run: docker-compose up -d --build
+#   2. Run: docker compose up -d --build
 #   3. Access: http://localhost:8010/cards/
 #
 # Management:
-#   - Create invite code: docker-compose exec poker python -m tools.manage_invites create --note "description"
-#   - List invite codes:  docker-compose exec poker python -m tools.manage_invites list
-#   - View logs:          docker-compose logs -f poker
+#   - Create invite code: docker compose exec poker python -m tools.manage_invites create --note "description"
+#   - List invite codes:  docker compose exec poker python -m tools.manage_invites list
+#   - View logs:          docker compose logs -f poker
 
 services:
   poker:
     build: .
     container_name: poker-coach
     ports:
-      - "8010:8010"
+      # Bind to localhost by default; expose publicly only if you explicitly set
+      # POKER_BIND_ADDR=0.0.0.0 (or adjust your firewall rules).
+      - "${POKER_BIND_ADDR:-127.0.0.1}:8010:8010"
     environment:
       # Application settings
       - APP_PREFIX=/cards
       
-      # AI Provider settings (required for LLM features)
-      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      # AI Provider settings (set to openai + key to enable LLM)
+      - AI_PROVIDER=${AI_PROVIDER:-dummy}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_API_BASE=${OPENAI_API_BASE:-}
       

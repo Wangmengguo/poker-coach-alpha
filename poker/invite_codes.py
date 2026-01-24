@@ -68,6 +68,10 @@ class InviteCodeStore:
 
         Also updates last_used_at timestamp on successful validation.
 
+        To avoid excessive write amplification (e.g. from debounced UI validation
+        or multiple concurrent WS connections), the last_used_at field is
+        rate-limited to at most once per minute per code.
+
         Args:
             code: The invite code to validate.
 
@@ -81,27 +85,43 @@ class InviteCodeStore:
         if not code:
             return False
 
-        with self._get_conn() as conn:
-            cursor = conn.execute(
-                "SELECT is_active FROM invite_codes WHERE code = ?",
-                (code,),
-            )
-            row = cursor.fetchone()
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(
+                    "SELECT is_active, last_used_at FROM invite_codes WHERE code = ?",
+                    (code,),
+                )
+                row = cursor.fetchone()
 
-            if row is None:
-                return False
+                if row is None:
+                    return False
 
-            if not row["is_active"]:
-                return False
+                if not row["is_active"]:
+                    return False
 
-            # Update last_used_at
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "UPDATE invite_codes SET last_used_at = ? WHERE code = ?",
-                (now, code),
-            )
-            conn.commit()
-            return True
+                # Update last_used_at (rate-limited)
+                should_update_last_used = True
+                try:
+                    last_used_raw = row["last_used_at"]
+                    if last_used_raw:
+                        last_used_dt = datetime.fromisoformat(str(last_used_raw))
+                        now_dt = datetime.now(timezone.utc)
+                        if last_used_dt.tzinfo is None:
+                            last_used_dt = last_used_dt.replace(tzinfo=timezone.utc)
+                        should_update_last_used = (now_dt - last_used_dt).total_seconds() >= 60
+                except Exception:
+                    should_update_last_used = True
+
+                if should_update_last_used:
+                    now = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        "UPDATE invite_codes SET last_used_at = ? WHERE code = ?",
+                        (now, code),
+                    )
+                    conn.commit()
+                return True
+        except sqlite3.Error:
+            return False
 
     def create_code(self, note: Optional[str] = None) -> str:
         """Generate and store a new invite code.
@@ -144,9 +164,7 @@ class InviteCodeStore:
         """
         with self._get_conn() as conn:
             if include_revoked:
-                cursor = conn.execute(
-                    "SELECT * FROM invite_codes ORDER BY created_at DESC"
-                )
+                cursor = conn.execute("SELECT * FROM invite_codes ORDER BY created_at DESC")
             else:
                 cursor = conn.execute(
                     "SELECT * FROM invite_codes WHERE is_active = 1 ORDER BY created_at DESC"

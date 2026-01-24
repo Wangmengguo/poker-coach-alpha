@@ -8,8 +8,9 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (if any compiled packages are needed)
+# Install system dependencies (used if any wheels need compilation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better layer caching
@@ -29,7 +30,7 @@ EXPOSE 8010
 
 # Environment variables (can be overridden at runtime)
 ENV APP_PREFIX=/cards
-ENV AI_PROVIDER=openai
+ENV AI_PROVIDER=dummy
 ENV PYTHONUNBUFFERED=1
 
 # Health check

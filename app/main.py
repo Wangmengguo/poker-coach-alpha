@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional, Set
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -143,6 +143,18 @@ _ai_provider = get_ai_provider_from_env()
 _invite_store = InviteCodeStore()
 
 
+async def _validate_invite_code_async(invite_code: str) -> bool:
+    code = str(invite_code or "").strip()
+    if not code:
+        return False
+    try:
+        import anyio
+
+        return await anyio.to_thread.run_sync(_invite_store.validate_code, code)
+    except Exception:
+        return False
+
+
 class AiModelAliasBody(BaseModel):
     model_alias: str
 
@@ -184,18 +196,18 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
             # 1. Browser explicitly enabled it
             # 2. Provider is configured (not DummyProvider)
             # 3. Valid invite code is present
-            if (
-                settings.llm_enabled
-                and not isinstance(_ai_provider, DummyProvider)
-                and settings.invite_valid
-            ):
+            invite_ok = False
+            if settings.invite_code:
+                invite_ok = await _validate_invite_code_async(settings.invite_code)
+                if invite_ok != settings.invite_valid:
+                    manager.update_settings(ws, invite_valid=invite_ok)
+
+            if settings.llm_enabled and not isinstance(_ai_provider, DummyProvider) and invite_ok:
                 async with use_model_alias(settings.model_alias):
-                    advice = await generate_ai_advice(
-                        dc, legal_actions, _ai_provider, history
-                    )
+                    advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
             else:
                 advice = select_actions_heuristic(dc, legal_actions)
-                if not settings.invite_valid:
+                if not invite_ok:
                     advice.reason = "invite_code_required"
                 elif not settings.llm_enabled:
                     advice.reason = "client_disabled_llm"
@@ -432,7 +444,7 @@ async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
 
     # Validate invite code
     invite_code = body.invite_code
-    if not invite_code or not _invite_store.validate_code(invite_code):
+    if not invite_code or not await _validate_invite_code_async(invite_code):
         return JSONResponse(status_code=403, content={"error": "invite_code_required"})
 
     seat = int(body.seat or 1)
@@ -604,7 +616,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                 if invite_code is not None:
                     invite_code_str = str(invite_code).strip()
                     if invite_code_str:
-                        invite_valid = _invite_store.validate_code(invite_code_str)
+                        invite_valid = await _validate_invite_code_async(invite_code_str)
                     else:
                         # Empty string means user cleared the code
                         invite_valid = False
