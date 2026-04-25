@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ from poker.analysis.equity import compute_hand_strength, HandStrengthResult
 from poker.analysis.compose import compose_analysis
 from poker.ai_coach import (
     generate_ai_advice,
+    get_allowed_model_tiers,
     get_ai_provider_from_env,
     get_allowed_model_aliases,
     get_current_model_alias,
@@ -27,6 +28,13 @@ from poker.ai_coach import (
     use_model_alias,
 )
 from poker.invite_codes import InviteCodeStore
+from poker.llm_config import (
+    list_gateway_models,
+    public_config,
+    resolve_model_id,
+    save_llm_config,
+    test_gateway_model,
+)
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = APP_ROOT / "public"
@@ -154,6 +162,49 @@ _ai_provider = get_ai_provider_from_env()
 _invite_store = InviteCodeStore()
 
 
+def _refresh_ai_provider() -> None:
+    global _ai_provider
+    _ai_provider = get_ai_provider_from_env()
+
+
+def _client_host(request: Request) -> str:
+    if request.client is None:
+        return ""
+    return request.client.host or ""
+
+
+def _is_local_host(host: str) -> bool:
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _is_admin_request(request: Request) -> bool:
+    token = os.getenv("ADMIN_TOKEN", "").strip()
+    if token:
+        supplied = request.headers.get("x-admin-token", "").strip()
+        supplied = supplied or request.query_params.get("admin_token", "").strip()
+        if supplied == token:
+            return True
+    allow_local = os.getenv("LOCAL_ADMIN_BYPASS", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return allow_local and _is_local_host(_client_host(request))
+
+
+def _local_invite_bypass_enabled(request: Optional[Request] = None) -> bool:
+    enabled = os.getenv("LOCAL_INVITE_BYPASS", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled or request is None:
+        return False
+    return _is_local_host(_client_host(request))
+
+
 async def _validate_invite_code_async(invite_code: str) -> bool:
     code = str(invite_code or "").strip()
     if not code:
@@ -174,6 +225,190 @@ class AiAdviceRequestBody(BaseModel):
     seat: int = 1
     model_alias: Optional[str] = None
     invite_code: Optional[str] = None
+
+
+ADMIN_LLM_HTML = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Admin - Poker Coach Alpha</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; background: #0b1520; color: #e6eef5; }
+      main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+      header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
+      h1 { font-size: 24px; margin: 0; }
+      h2 { font-size: 16px; margin: 0 0 12px; color: #d4af37; }
+      section { border-top: 1px solid rgba(255,255,255,.12); padding: 18px 0; }
+      label { display: grid; gap: 6px; color: #9ca3af; font-size: 13px; }
+      input, select { width: 100%; border: 1px solid #2f4863; border-radius: 6px; background: #101c29; color: #e6eef5; padding: 9px 10px; font: inherit; }
+      button { border: 1px solid rgba(212,175,55,.45); border-radius: 6px; background: rgba(212,175,55,.12); color: #e6eef5; padding: 9px 12px; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: not-allowed; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .tier { border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 12px; background: #101c29; display: grid; gap: 10px; }
+      .tier-title { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-weight: 700; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .status { min-height: 22px; color: #9ca3af; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .models { max-height: 220px; overflow: auto; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; padding: 8px; background: #101c29; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      @media (max-width: 760px) { .grid, .tiers { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>LLM Admin</h1>
+        <a href="../" style="color:#d4af37">Back to app</a>
+      </header>
+      <section>
+        <h2>Gateway</h2>
+        <div class="grid">
+          <label>Provider
+            <select id="provider">
+              <option value="dummy">dummy</option>
+              <option value="openai">openai-compatible</option>
+              <option value="gateway">gateway</option>
+            </select>
+          </label>
+          <label>API Base
+            <input id="apiBase" placeholder="https://gateway.example.com/v1" />
+          </label>
+          <label>API Key
+            <input id="apiKey" type="password" placeholder="leave blank to keep current key" />
+          </label>
+          <label>Default Tier
+            <select id="defaultTier">
+              <option value="smart">smart</option>
+              <option value="balanced">balanced</option>
+              <option value="fast">fast</option>
+            </select>
+          </label>
+        </div>
+      </section>
+      <section>
+        <h2>Tiers</h2>
+        <div class="tiers" id="tiers"></div>
+      </section>
+      <section>
+        <div class="actions">
+          <button id="saveBtn">Save config</button>
+          <button id="listBtn">Fetch model list</button>
+          <button id="testBtn">Test all tiers</button>
+        </div>
+        <p id="status" class="status"></p>
+        <div id="models" class="models" hidden></div>
+      </section>
+    </main>
+    <script>
+      const tierIds = ["smart", "balanced", "fast"];
+      let loaded = null;
+      const adminToken = new URLSearchParams(window.location.search).get("admin_token") || "";
+      function api(path, opts = {}) {
+        const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+        if (adminToken) headers["x-admin-token"] = adminToken;
+        return fetch(path, { ...opts, headers });
+      }
+      function setStatus(text) { document.getElementById("status").textContent = text || ""; }
+      function tierCard(id, data) {
+        return `<div class="tier" data-tier="${id}">
+          <div class="tier-title"><span>${id}</span><label style="display:flex;grid-template-columns:auto;gap:6px;align-items:center"><input type="checkbox" class="tier-enabled" ${data.enabled ? "checked" : ""}/> enabled</label></div>
+          <label>Label <input class="tier-label" value="${data.label || id}" /></label>
+          <label>Model <input class="tier-model" value="${data.model || ""}" /></label>
+          <label>Cost
+            <select class="tier-cost">
+              ${["low","medium","high"].map(v => `<option value="${v}" ${data.cost_level === v ? "selected" : ""}>${v}</option>`).join("")}
+            </select>
+          </label>
+          <label>Timeout seconds <input class="tier-timeout" type="number" min="1" max="120" value="${data.timeout_seconds || 20}" /></label>
+        </div>`;
+      }
+      function collect() {
+        const tiers = {};
+        document.querySelectorAll(".tier").forEach((el) => {
+          const id = el.dataset.tier;
+          tiers[id] = {
+            enabled: el.querySelector(".tier-enabled").checked,
+            label: el.querySelector(".tier-label").value.trim(),
+            model: el.querySelector(".tier-model").value.trim(),
+            cost_level: el.querySelector(".tier-cost").value,
+            timeout_seconds: Number(el.querySelector(".tier-timeout").value || 20),
+          };
+        });
+        const apiKeyInput = document.getElementById("apiKey").value.trim();
+        return {
+          provider: document.getElementById("provider").value,
+          api_base: document.getElementById("apiBase").value.trim(),
+          api_key: apiKeyInput || (loaded && loaded.api_key_set ? undefined : ""),
+          default_tier: document.getElementById("defaultTier").value,
+          tiers,
+        };
+      }
+      async function load() {
+        const res = await api("llm/config");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        loaded = await res.json();
+        document.getElementById("provider").value = loaded.provider || "dummy";
+        document.getElementById("apiBase").value = loaded.api_base || "";
+        document.getElementById("apiKey").placeholder = loaded.api_key_set ? `current: ${loaded.api_key_preview}` : "required for openai/gateway";
+        document.getElementById("defaultTier").value = loaded.default_tier || "balanced";
+        document.getElementById("tiers").innerHTML = tierIds.map((id) => tierCard(id, loaded.tiers[id] || {})).join("");
+      }
+      document.getElementById("saveBtn").onclick = async () => {
+        setStatus("Saving...");
+        const res = await api("llm/config", { method: "POST", body: JSON.stringify(collect()) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { setStatus(`Save failed: ${data.error || res.status}`); return; }
+        document.getElementById("apiKey").value = "";
+        loaded = data;
+        setStatus("Saved.");
+      };
+      document.getElementById("listBtn").onclick = async () => {
+        setStatus("Fetching models...");
+        const res = await api("llm/models", { method: "POST", body: JSON.stringify(collect()) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { setStatus(`Fetch failed: ${data.error || res.status}`); return; }
+        const box = document.getElementById("models");
+        box.hidden = false;
+        box.textContent = (data.models || []).join("\\n") || "(no models returned)";
+        setStatus(`Fetched ${data.models.length} model(s).`);
+      };
+      document.getElementById("testBtn").onclick = async () => {
+        const btn = document.getElementById("testBtn");
+        const payload = collect();
+        const lines = [];
+        btn.disabled = true;
+        try {
+          for (const tierId of tierIds) {
+            const tier = payload.tiers && payload.tiers[tierId];
+            const modelName = tier && tier.model ? String(tier.model).trim() : "";
+            if (!modelName) {
+              lines.push(`${tierId}: skipped (no model in form)`);
+              continue;
+            }
+            setStatus(`Testing ${tierId} (${modelName})...`);
+            const testPayload = { ...payload, tier: tierId, model: modelName };
+            const res = await api("llm/test", { method: "POST", body: JSON.stringify(testPayload) });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+              lines.push(`${tierId}: FAILED — ${data.error || res.status || "error"}`);
+            } else {
+              lines.push(`${tierId}: ok — ${data.model} -> ${data.response || ""}`);
+            }
+          }
+          setStatus(lines.join("\\n") || "Nothing to test.");
+        } catch (e) {
+          setStatus(`Test error: ${e}`);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      load().catch((err) => setStatus(`Load failed: ${err}`));
+    </script>
+  </body>
+</html>
+"""
 
 
 async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
@@ -250,7 +485,17 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
             # 2. Provider is configured (not DummyProvider)
             # 3. Valid invite code is present
             invite_ok = False
-            if settings.invite_code:
+            try:
+                ws_host = ws.client.host if ws.client is not None else ""
+                invite_ok = os.getenv("LOCAL_INVITE_BYPASS", "0").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                } and _is_local_host(ws_host)
+            except Exception:
+                invite_ok = False
+            if settings.invite_code and not invite_ok:
                 invite_ok = await _validate_invite_code_async(settings.invite_code)
                 if invite_ok != settings.invite_valid:
                     manager.update_settings(ws, invite_valid=invite_ok)
@@ -441,6 +686,72 @@ def index_prefixed() -> HTMLResponse:
     return index()
 
 
+@app.get("/admin/llm", response_class=HTMLResponse)
+@app.get(f"{APP_PREFIX}/admin/llm", response_class=HTMLResponse)
+def llm_admin_page(request: Request) -> HTMLResponse:
+    if not _is_admin_request(request):
+        return HTMLResponse("Forbidden", status_code=403)
+    return HTMLResponse(ADMIN_LLM_HTML)
+
+
+@app.get("/admin/llm/config")
+@app.get(f"{APP_PREFIX}/admin/llm/config")
+def get_llm_admin_config(request: Request):
+    if not _is_admin_request(request):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    return public_config()
+
+
+@app.post("/admin/llm/config")
+@app.post(f"{APP_PREFIX}/admin/llm/config")
+async def set_llm_admin_config(request: Request):
+    if not _is_admin_request(request):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    try:
+        payload = await request.json()
+        cfg = save_llm_config(payload if isinstance(payload, dict) else {})
+        _refresh_ai_provider()
+        if cfg.get("default_tier"):
+            set_current_model_alias(str(cfg["default_tier"]))
+        return public_config()
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "save_failed"})
+
+
+@app.post("/admin/llm/models")
+@app.post(f"{APP_PREFIX}/admin/llm/models")
+async def get_llm_gateway_models(request: Request):
+    if not _is_admin_request(request):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    try:
+        payload = await request.json()
+        models = await list_gateway_models(payload if isinstance(payload, dict) else None)
+        return {"models": models}
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.post("/admin/llm/test")
+@app.post(f"{APP_PREFIX}/admin/llm/test")
+async def test_llm_gateway(request: Request):
+    if not _is_admin_request(request):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+        model = str(payload.get("model") or "").strip()
+        if not model:
+            model = resolve_model_id(str(payload.get("tier") or payload.get("default_tier") or ""))
+        result = await test_gateway_model(model, payload)
+        status = 200 if result.get("ok") else 400
+        return JSONResponse(status_code=status, content=result)
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
 @app.post("/tables")
 @app.post(f"{APP_PREFIX}/tables")
 def create_table():
@@ -451,11 +762,13 @@ def create_table():
 
 @app.get("/settings/ai_model")
 @app.get(f"{APP_PREFIX}/settings/ai_model")
-def get_ai_model_settings():
+def get_ai_model_settings(request: Request):
     return {
         "model_alias": get_current_model_alias(),
         "allowed": get_allowed_model_aliases(),
+        "tiers": get_allowed_model_tiers(),
         "llm_available": not isinstance(_ai_provider, DummyProvider),
+        "invite_required": not _local_invite_bypass_enabled(request),
         # Per-browser default is OFF; this is informational only for the UI.
         "default_llm_enabled": False,
     }
@@ -482,13 +795,16 @@ def join_table(table_id: str):
 
 @app.post("/tables/{table_id}/ai_advice/llm")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/ai_advice/llm")
-async def request_llm_ai_advice(table_id: str, body: AiAdviceRequestBody):
+async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceRequestBody):
     if isinstance(_ai_provider, DummyProvider):
         return JSONResponse(status_code=400, content={"error": "llm_not_configured"})
 
     # Validate invite code
     invite_code = body.invite_code
-    if not invite_code or not await _validate_invite_code_async(invite_code):
+    invite_ok = _local_invite_bypass_enabled(request)
+    if not invite_ok and invite_code:
+        invite_ok = await _validate_invite_code_async(invite_code)
+    if not invite_ok:
         return JSONResponse(status_code=403, content={"error": "invite_code_required"})
 
     seat = int(body.seat or 1)
@@ -685,9 +1001,22 @@ async def ws_table(websocket: WebSocket, table_id: str):
 
                 # Validate invite code if provided
                 invite_valid: Optional[bool] = None
+                try:
+                    ws_host = websocket.client.host if websocket.client is not None else ""
+                    if os.getenv("LOCAL_INVITE_BYPASS", "0").strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    } and _is_local_host(ws_host):
+                        invite_valid = True
+                except Exception:
+                    invite_valid = None
                 if invite_code is not None:
                     invite_code_str = str(invite_code).strip()
-                    if invite_code_str:
+                    if invite_valid is True:
+                        pass
+                    elif invite_code_str:
                         invite_valid = await _validate_invite_code_async(invite_code_str)
                     else:
                         # Empty string means user cleared the code

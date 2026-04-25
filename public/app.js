@@ -93,11 +93,21 @@ async function initModelSelector() {
     const res = await fetch(withBase('/settings/ai_model'));
     if (!res.ok) return;
     const data = await res.json();
-    const { llm_available: llmAvailable, model_alias: current, allowed } = data || {};
+    const {
+      llm_available: llmAvailable,
+      model_alias: current,
+      allowed,
+      tiers,
+      invite_required: inviteRequired = true,
+    } = data || {};
     const isLlmAvailable = !!llmAvailable;
+    const availableTiers = Array.isArray(tiers) && tiers.length > 0
+      ? tiers.filter((tier) => tier && tier.enabled !== false)
+      : (Array.isArray(allowed) ? allowed.map((name) => ({ id: name, label: name })) : []);
+    const allowedIds = availableTiers.map((tier) => tier.id);
 
     // Backend can run in heuristic-only mode; in that case model switching is disabled.
-    if (!allowed || !Array.isArray(allowed) || allowed.length === 0) {
+    if (!availableTiers || availableTiers.length === 0) {
       selectEl.innerHTML = '';
       const opt = document.createElement('option');
       opt.value = 'heuristic';
@@ -120,16 +130,18 @@ async function initModelSelector() {
     }
 
     selectEl.innerHTML = '';
-    allowed.forEach((name) => {
+    availableTiers.forEach((tier) => {
       const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
+      opt.value = tier.id;
+      opt.textContent = tier.label || tier.id;
       selectEl.appendChild(opt);
     });
 
     // Per-browser defaults (persisted in localStorage)
     const storedAlias = _getStoredStr(STORAGE_KEYS.modelAlias, current);
-    const initialAlias = allowed.includes(storedAlias) ? storedAlias : current;
+    const initialAlias = allowedIds.includes(storedAlias)
+      ? storedAlias
+      : (allowedIds.includes(current) ? current : allowedIds[0]);
     selectEl.value = initialAlias;
     _setStoredStr(STORAGE_KEYS.modelAlias, initialAlias);
 
@@ -150,7 +162,8 @@ async function initModelSelector() {
     selectEl.onchange = () => {
       const alias = selectEl.value;
       _setStoredStr(STORAGE_KEYS.modelAlias, alias);
-      renderer.log(`Model selected (this browser): ${alias}`);
+      const selectedTier = availableTiers.find((tier) => tier.id === alias);
+      renderer.log(`LLM mode selected (this browser): ${selectedTier?.label || alias}`);
       _sendClientSettings();
     };
 
@@ -178,7 +191,7 @@ async function initModelSelector() {
           setTimeout(() => _setAskButtonState(askLlmBtn, 'idle', 'Ask once'), 1200);
           return;
         }
-        if (!invite_code) {
+        if (inviteRequired && !invite_code) {
           renderer.log('Invite code required for LLM advice.');
           _setAskButtonState(askLlmBtn, 'error', 'Need code');
           setTimeout(() => _setAskButtonState(askLlmBtn, 'idle', 'Ask once'), 1200);

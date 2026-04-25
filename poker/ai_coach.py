@@ -7,6 +7,15 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from .analysis.models import DecisionContext
+from .llm_config import (
+    LEGACY_MODEL_IDS,
+    get_default_tier,
+    get_enabled_tier_ids,
+    get_model_tiers,
+    get_provider_credentials,
+    is_llm_configured,
+    resolve_model_id,
+)
 
 
 class AiProvider(Protocol):
@@ -28,24 +37,12 @@ class DummyProvider:
         return ""
 
 
-# Whitelisted model aliases for the AI coach.
-# Keys are the human-visible names; values are the underlying model ids
-# passed to the OpenAI-compatible gateway. In the current setup we keep
-# them identical so the UI always shows the real model name.
-ALLOWED_MODELS: Dict[str, str] = {
-    "claude-4.5-sonnet": "claude-4.5-sonnet",
-    "claude-opus-4-5": "claude-opus-4-5",
-    "gemini-3-flash-preview": "gemini-3-flash-preview",
-    "moonshotai/kimi-k2-instruct": "moonshotai/kimi-k2-instruct",
-    "gpt-5.1-chat-latest": "gpt-5.1-chat-latest",
-    "gpt-5.2": "gpt-5.2",
-    "gpt-5.2-pro": "gpt-5.2-pro",
-    "deepseek-chat": "deepseek-chat",
-    "grok-4-fast-reasoning": "grok-4-fast-reasoning",
-}
+# Backwards-compatible export for existing scripts/tests. Runtime selection now
+# uses tier ids (smart/balanced/fast) and resolves them through llm_config.
+ALLOWED_MODELS: Dict[str, str] = LEGACY_MODEL_IDS
 
-_DEFAULT_ALIAS = "gpt-5.1-chat-latest"
-_current_model_alias: str = os.getenv("AI_MODEL_ALIAS", _DEFAULT_ALIAS)
+_DEFAULT_ALIAS = "balanced"
+_current_model_alias: str = os.getenv("AI_MODEL_TIER", _DEFAULT_ALIAS)
 _model_alias_lock = asyncio.Lock()
 
 
@@ -59,7 +56,7 @@ async def use_model_alias(alias: Optional[str]):
     global _current_model_alias
     async with _model_alias_lock:
         prev = _current_model_alias
-        if alias and alias in ALLOWED_MODELS:
+        if alias and alias in set(get_allowed_model_aliases()):
             _current_model_alias = alias
         try:
             yield
@@ -68,22 +65,24 @@ async def use_model_alias(alias: Optional[str]):
 
 
 def get_allowed_model_aliases() -> List[str]:
-    return sorted(ALLOWED_MODELS.keys())
+    enabled = get_enabled_tier_ids()
+    return enabled if enabled else ["balanced"]
+
+
+def get_allowed_model_tiers() -> List[Dict[str, Any]]:
+    return get_model_tiers()
 
 
 def get_current_model_alias() -> str:
     alias = _current_model_alias or _DEFAULT_ALIAS
-    if alias in ALLOWED_MODELS:
+    if alias in set(get_allowed_model_aliases()):
         return alias
-    # Fallback: pick a stable first key if default is invalid
-    if ALLOWED_MODELS:
-        return sorted(ALLOWED_MODELS.keys())[0]
-    return _DEFAULT_ALIAS
+    return get_default_tier()
 
 
 def set_current_model_alias(alias: str) -> bool:
     global _current_model_alias
-    if alias not in ALLOWED_MODELS:
+    if alias not in set(get_allowed_model_aliases()):
         return False
     _current_model_alias = alias
     return True
@@ -155,12 +154,13 @@ class OpenAICompatibleProvider:
         # Import locally so environments without the dependency can still import this module.
         from openai import AsyncOpenAI  # type: ignore
 
-        api_key = os.getenv("OPENAI_API_KEY") or ""
-        base_url = os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_API_URL") or ""
+        creds = get_provider_credentials()
+        api_key = creds["api_key"]
+        base_url = creds["api_base"]
         client = AsyncOpenAI(api_key=api_key or None, base_url=base_url or None)
 
         alias = get_current_model_alias()
-        model = ALLOWED_MODELS.get(alias, alias)
+        model = resolve_model_id(alias)
         debug = os.getenv("AI_COACH_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
         async def _responses_fallback() -> str:
@@ -660,11 +660,11 @@ def select_actions_heuristic(
 
 
 def get_ai_provider_from_env() -> Optional[AiProvider]:
-    provider_name = os.getenv("AI_PROVIDER", "").strip().lower()
+    provider_name = get_provider_credentials()["provider"]
     if not provider_name or provider_name == "dummy":
         return DummyProvider()
     if provider_name in {"openai", "gateway"}:
-        if not os.getenv("OPENAI_API_KEY"):
+        if not is_llm_configured():
             return DummyProvider()
         return OpenAICompatibleProvider()
     return DummyProvider()

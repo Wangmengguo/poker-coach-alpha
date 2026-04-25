@@ -29,6 +29,13 @@ services:
       
       # Optional: Default model alias
       - AI_MODEL_ALIAS=${AI_MODEL_ALIAS:-gpt-5.1-chat-latest}
+      - AI_MODEL_TIER=${AI_MODEL_TIER:-balanced}
+      - AI_SMART_MODEL=${AI_SMART_MODEL:-gpt-5.2-pro}
+      - AI_BALANCED_MODEL=${AI_BALANCED_MODEL:-gpt-5.1-chat-latest}
+      - AI_FAST_MODEL=${AI_FAST_MODEL:-deepseek-chat}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
+      - LOCAL_ADMIN_BYPASS=${LOCAL_ADMIN_BYPASS:-0}
+      - LOCAL_INVITE_BYPASS=${LOCAL_INVITE_BYPASS:-0}
       
       # Optional: Debug mode for AI Coach
       - AI_COACH_DEBUG=${AI_COACH_DEBUG:-0}
