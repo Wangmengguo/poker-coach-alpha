@@ -30,10 +30,27 @@ from poker.invite_codes import InviteCodeStore
 def cmd_create(args: argparse.Namespace) -> int:
     """Create a new invite code."""
     store = InviteCodeStore()
-    code = store.create_code(note=args.note)
+    allowed_models = None
+    if args.models:
+        allowed_models = [part.strip() for part in args.models.split(",") if part.strip()]
+    code = store.create_code(
+        note=args.note,
+        expires_at=args.expires_at,
+        max_uses=args.max_uses,
+        daily_quota=args.daily_quota,
+        allowed_model_aliases=allowed_models,
+    )
     print(f"Created invite code: {code}")
     if args.note:
         print(f"Note: {args.note}")
+    if args.expires_at:
+        print(f"Expires: {args.expires_at}")
+    if args.max_uses is not None:
+        print(f"Max uses: {args.max_uses}")
+    if args.daily_quota is not None:
+        print(f"Daily quota: {args.daily_quota}")
+    if allowed_models:
+        print(f"Models: {', '.join(allowed_models)}")
     return 0
 
 
@@ -47,15 +64,26 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
 
     # Header
-    print(f"{'CODE':<16} {'STATUS':<10} {'CREATED':<20} {'LAST USED':<20} {'NOTE'}")
-    print("-" * 90)
+    print(
+        f"{'CODE':<16} {'STATUS':<10} {'USES':<9} {'DAILY':<9} "
+        f"{'EXPIRES':<20} {'LAST USED':<20} {'MODELS':<20} {'NOTE'}"
+    )
+    print("-" * 125)
 
     for c in codes:
         status = "active" if c["is_active"] else "REVOKED"
-        created = c["created_at"][:19] if c["created_at"] else "-"
+        max_uses = c.get("max_uses")
+        uses = f"{c.get('use_count', 0)}/{max_uses if max_uses is not None else '-'}"
+        daily_quota = c.get("daily_quota")
+        daily = f"{c.get('daily_use_count', 0)}/{daily_quota if daily_quota is not None else '-'}"
+        expires = c.get("expires_at", "")[:19] if c.get("expires_at") else "-"
         last_used = c["last_used_at"][:19] if c["last_used_at"] else "-"
+        models = c.get("allowed_model_aliases") or "-"
         note = c["note"] or "-"
-        print(f"{c['code']:<16} {status:<10} {created:<20} {last_used:<20} {note}")
+        print(
+            f"{c['code']:<16} {status:<10} {uses:<9} {daily:<9} "
+            f"{expires:<20} {last_used:<20} {models:<20} {note}"
+        )
 
     print(f"\nTotal: {len(codes)} code(s)")
     active_count = sum(1 for c in codes if c["is_active"])
@@ -93,6 +121,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"Status: {'active' if info['is_active'] else 'REVOKED'}")
     print(f"Created: {info['created_at']}")
     print(f"Last used: {info['last_used_at'] or 'never'}")
+    print(f"Expires: {info.get('expires_at') or '-'}")
+    print(f"Uses: {info.get('use_count', 0)}/{info.get('max_uses') or '-'}")
+    print(f"Daily uses: {info.get('daily_use_count', 0)}/{info.get('daily_quota') or '-'}")
+    print(f"Models: {info.get('allowed_model_aliases') or '-'}")
+    print(f"Session: {info.get('session_id') or '-'}")
     print(f"Note: {info['note'] or '-'}")
 
     if is_valid:
@@ -113,6 +146,13 @@ def main() -> int:
     # create
     p_create = subparsers.add_parser("create", help="Create a new invite code")
     p_create.add_argument("--note", "-n", help="Optional note/description")
+    p_create.add_argument("--expires-at", help="ISO datetime, e.g. 2026-05-01T00:00:00+00:00")
+    p_create.add_argument("--max-uses", type=int, help="Maximum total LLM calls")
+    p_create.add_argument("--daily-quota", type=int, help="Maximum LLM calls per UTC day")
+    p_create.add_argument(
+        "--models",
+        help="Comma-separated allowed model aliases/tiers, e.g. fast,balanced",
+    )
     p_create.set_defaults(func=cmd_create)
 
     # list

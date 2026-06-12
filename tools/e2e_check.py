@@ -42,6 +42,10 @@ sys.path.insert(0, str(project_root))
 
 from poker.invite_codes import InviteCodeStore
 
+
+def _invite_session_id_for_code(invite_code: str) -> str:
+    return f"e2e-{invite_code.strip().upper()}"
+
 # ANSI colors for output
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -236,11 +240,13 @@ async def check_ws_invite_validation(
                 log_step("WS invite validation", "fail", "Timeout waiting for initial snapshot")
                 return False
 
+            invite_session_id = _invite_session_id_for_code(invite_code)
             # Send client_settings with invite code
             settings = {
                 "type": "client_settings",
                 "llm_enabled": True,
                 "invite_code": invite_code,
+                "invite_session_id": invite_session_id,
             }
             await ws.send(json.dumps(settings))
             if verbose:
@@ -272,7 +278,11 @@ async def check_llm_rest(base_url: str, invite_code: str, timeout: float, verbos
     """Check LLM advice REST endpoint with invite code."""
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            body = {"seat": 1, "invite_code": invite_code}
+            body = {
+                "seat": 1,
+                "invite_code": invite_code,
+                "invite_session_id": _invite_session_id_for_code(invite_code),
+            }
             resp = await client.post(
                 f"{base_url}/tables/default/ai_advice/llm",
                 json=body,

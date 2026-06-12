@@ -20,6 +20,7 @@ const STORAGE_KEYS = {
   llmEnabled: 'pokerCoach.llmEnabled',
   modelAlias: 'pokerCoach.modelAlias',
   inviteCode: 'pokerCoach.inviteCode',
+  inviteSessionId: 'pokerCoach.inviteSessionId',
 };
 
 function _setAskButtonState(btn, state, label) {
@@ -66,6 +67,20 @@ function _setStoredStr(key, val) {
   }
 }
 
+function _getInviteSessionId() {
+  let sessionId = _getStoredStr(STORAGE_KEYS.inviteSessionId, '');
+  if (sessionId) return sessionId;
+  try {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    sessionId = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+  _setStoredStr(STORAGE_KEYS.inviteSessionId, sessionId);
+  return sessionId;
+}
+
 function _sendClientSettings() {
   const llmToggleEl = document.getElementById('llmToggle');
   const modelSelectEl = document.getElementById('modelSelect');
@@ -73,7 +88,8 @@ function _sendClientSettings() {
   const llm_enabled = !!(llmToggleEl && !llmToggleEl.disabled && llmToggleEl.checked);
   const model_alias = modelSelectEl ? modelSelectEl.value : null;
   const invite_code = inviteCodeEl ? inviteCodeEl.value.trim().toUpperCase() : null;
-  wsManager.send({ type: 'client_settings', llm_enabled, model_alias, invite_code });
+  const invite_session_id = _getInviteSessionId();
+  wsManager.send({ type: 'client_settings', llm_enabled, model_alias, invite_code, invite_session_id });
 }
 
 function _setInviteStatus(status) {
@@ -185,6 +201,7 @@ async function initModelSelector() {
         const alias = selectEl.value;
         const inviteCodeEl = document.getElementById('inviteCodeInput');
         const invite_code = inviteCodeEl ? inviteCodeEl.value.trim().toUpperCase() : '';
+        const invite_session_id = _getInviteSessionId();
         if (!tableId) {
           renderer.log('No table id yet; start a session first.');
           _setAskButtonState(askLlmBtn, 'error', 'No table');
@@ -206,7 +223,7 @@ async function initModelSelector() {
           const llmRes = await fetch(withBase(`/tables/${tableId}/ai_advice/llm`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seat, model_alias: alias, invite_code }),
+            body: JSON.stringify({ seat, model_alias: alias, invite_code, invite_session_id }),
             signal: controller.signal,
           });
           clearTimeout(timer);

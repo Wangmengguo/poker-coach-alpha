@@ -5,6 +5,7 @@ from typing import Dict, Optional, Set
 import asyncio
 from dataclasses import dataclass
 import os
+import time
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +28,7 @@ from poker.ai_coach import (
     DummyProvider,
     use_model_alias,
 )
-from poker.invite_codes import InviteCodeStore
+from poker.invite_codes import InviteCodeStore, InviteValidationResult
 from poker.llm_config import (
     list_gateway_models,
     public_config,
@@ -70,6 +71,7 @@ class ClientSettings:
     llm_enabled: bool = False
     model_alias: str = ""
     invite_code: str = ""
+    invite_session_id: str = ""
     invite_valid: bool = False
 
 
@@ -120,6 +122,7 @@ class ConnectionManager:
         llm_enabled: Optional[bool] = None,
         model_alias: Optional[str] = None,
         invite_code: Optional[str] = None,
+        invite_session_id: Optional[str] = None,
         invite_valid: Optional[bool] = None,
     ) -> ClientSettings:
         cur = self.get_settings(websocket)
@@ -129,6 +132,8 @@ class ConnectionManager:
             cur.model_alias = model_alias
         if invite_code is not None:
             cur.invite_code = str(invite_code).strip()
+        if invite_session_id is not None:
+            cur.invite_session_id = str(invite_session_id).strip()[:128]
         if invite_valid is not None:
             cur.invite_valid = bool(invite_valid)
         self._settings[websocket] = cur
@@ -160,6 +165,7 @@ _ai_provider = get_ai_provider_from_env()
 
 # Invite code store for API access control
 _invite_store = InviteCodeStore()
+_rate_limit_events: Dict[tuple, list[float]] = {}
 
 
 def _refresh_ai_provider() -> None:
@@ -217,6 +223,144 @@ async def _validate_invite_code_async(invite_code: str) -> bool:
         return False
 
 
+async def _check_invite_code_async(
+    invite_code: str,
+    *,
+    session_id: Optional[str] = None,
+    model_alias: Optional[str] = None,
+) -> InviteValidationResult:
+    code = str(invite_code or "").strip()
+    if not code:
+        return InviteValidationResult(False, "missing")
+    try:
+        import anyio
+
+        return await anyio.to_thread.run_sync(
+            lambda: _invite_store.check_code(
+                code,
+                session_id=session_id,
+                model_alias=model_alias,
+                require_session=True,
+            )
+        )
+    except Exception:
+        return InviteValidationResult(False, "store_error", code)
+
+
+async def _consume_invite_llm_call_async(
+    invite_code: str,
+    *,
+    session_id: Optional[str] = None,
+    model_alias: Optional[str] = None,
+) -> InviteValidationResult:
+    code = str(invite_code or "").strip()
+    if not code:
+        return InviteValidationResult(False, "missing")
+    try:
+        import anyio
+
+        return await anyio.to_thread.run_sync(
+            lambda: _invite_store.consume_llm_call(
+                code,
+                session_id=session_id,
+                model_alias=model_alias,
+                require_session=True,
+            )
+        )
+    except Exception:
+        return InviteValidationResult(False, "store_error", code)
+
+
+def _rate_limited(key: tuple, *, limit: int, window_seconds: int) -> bool:
+    if limit <= 0 or window_seconds <= 0:
+        return False
+    now = time.monotonic()
+    cutoff = now - window_seconds
+    events = [ts for ts in _rate_limit_events.get(key, []) if ts >= cutoff]
+    limited = len(events) >= limit
+    if not limited:
+        events.append(now)
+    _rate_limit_events[key] = events
+    return limited
+
+
+def _any_rate_limited(
+    checks: list[tuple[tuple, int, int]],
+) -> bool:
+    limited = False
+    for key, limit, window_seconds in checks:
+        if _rate_limited(key, limit=limit, window_seconds=window_seconds):
+            limited = True
+    return limited
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _invite_failure_rate_limited(
+    *,
+    interface: str,
+    host: str,
+    invite_code: Optional[str],
+) -> bool:
+    code = str(invite_code or "").strip().upper()[:64]
+    normalized_host = host or "unknown"
+    window = _env_int("INVITE_FAIL_WINDOW_SECONDS", 300)
+    return _any_rate_limited(
+        [
+            (
+                ("invite_fail_ip", interface, normalized_host),
+                _env_int("INVITE_FAIL_IP_LIMIT", 50),
+                window,
+            ),
+            (
+                ("invite_fail_code", interface, code),
+                _env_int("INVITE_FAIL_CODE_LIMIT", 20),
+                window,
+            ),
+            (
+                ("invite_fail_pair", interface, normalized_host, code),
+                _env_int("INVITE_FAIL_LIMIT", 10),
+                window,
+            ),
+        ]
+    )
+
+
+def _llm_call_rate_limited(
+    *,
+    interface: str,
+    host: str,
+    invite_code: Optional[str],
+) -> bool:
+    code = str(invite_code or "").strip().upper()[:64]
+    normalized_host = host or "unknown"
+    window = _env_int("LLM_CALL_WINDOW_SECONDS", 3600)
+    return _any_rate_limited(
+        [
+            (
+                ("llm_call_ip", interface, normalized_host),
+                _env_int("LLM_CALL_IP_LIMIT", 60),
+                window,
+            ),
+            (
+                ("llm_call_code", interface, code),
+                _env_int("LLM_CALL_CODE_LIMIT", 30),
+                window,
+            ),
+            (
+                ("llm_call_pair", interface, normalized_host, code),
+                _env_int("LLM_CALL_LIMIT", 30),
+                window,
+            ),
+        ]
+    )
+
+
 class AiModelAliasBody(BaseModel):
     model_alias: str
 
@@ -225,6 +369,7 @@ class AiAdviceRequestBody(BaseModel):
     seat: int = 1
     model_alias: Optional[str] = None
     invite_code: Optional[str] = None
+    invite_session_id: Optional[str] = None
 
 
 ADMIN_LLM_HTML = """
@@ -495,18 +640,41 @@ async def _broadcast_ai_advice(table_id: str, seat: int) -> None:
                 } and _is_local_host(ws_host)
             except Exception:
                 invite_ok = False
-            if settings.invite_code and not invite_ok:
-                invite_ok = await _validate_invite_code_async(settings.invite_code)
-                if invite_ok != settings.invite_valid:
-                    manager.update_settings(ws, invite_valid=invite_ok)
+            wants_llm = settings.llm_enabled and not isinstance(_ai_provider, DummyProvider)
+            if wants_llm and settings.invite_code and not invite_ok:
+                if _llm_call_rate_limited(
+                    interface="ws_auto",
+                    host=ws_host,
+                    invite_code=settings.invite_code,
+                ):
+                    invite_ok = False
+                    invite_reason = "rate_limited"
+                else:
+                    invite_result = await _consume_invite_llm_call_async(
+                        settings.invite_code,
+                        session_id=settings.invite_session_id,
+                        model_alias=settings.model_alias,
+                    )
+                    invite_ok = invite_result.ok
+                    invite_reason = invite_result.reason
+                    if invite_ok != settings.invite_valid:
+                        manager.update_settings(ws, invite_valid=invite_ok)
+                    if not invite_ok:
+                        _invite_failure_rate_limited(
+                            interface="ws_auto",
+                            host=ws_host,
+                            invite_code=settings.invite_code,
+                        )
+            else:
+                invite_reason = "invite_code_required"
 
-            if settings.llm_enabled and not isinstance(_ai_provider, DummyProvider) and invite_ok:
+            if wants_llm and invite_ok:
                 async with use_model_alias(settings.model_alias):
                     advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
             else:
                 advice = select_actions_heuristic(dc, legal_actions)
                 if not invite_ok:
-                    advice.reason = "invite_code_required"
+                    advice.reason = invite_reason or "invite_code_required"
                 elif not settings.llm_enabled:
                     advice.reason = "client_disabled_llm"
                 elif isinstance(_ai_provider, DummyProvider):
@@ -799,19 +967,38 @@ async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceR
     if isinstance(_ai_provider, DummyProvider):
         return JSONResponse(status_code=400, content={"error": "llm_not_configured"})
 
+    alias = body.model_alias
+    if alias is not None and alias not in set(get_allowed_model_aliases()):
+        return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
+
     # Validate invite code
     invite_code = body.invite_code
     invite_ok = _local_invite_bypass_enabled(request)
     if not invite_ok and invite_code:
-        invite_ok = await _validate_invite_code_async(invite_code)
+        host = _client_host(request)
+        if _llm_call_rate_limited(interface="rest_once", host=host, invite_code=invite_code):
+            return JSONResponse(status_code=429, content={"error": "rate_limited"})
+        invite_result = await _consume_invite_llm_call_async(
+            invite_code,
+            session_id=body.invite_session_id,
+            model_alias=body.model_alias,
+        )
+        invite_ok = invite_result.ok
+        if not invite_ok:
+            if _invite_failure_rate_limited(
+                interface="rest_once",
+                host=host,
+                invite_code=invite_code,
+            ):
+                return JSONResponse(status_code=429, content={"error": "rate_limited"})
+            return JSONResponse(
+                status_code=403,
+                content={"error": "invite_code_required", "reason": invite_result.reason},
+            )
     if not invite_ok:
         return JSONResponse(status_code=403, content={"error": "invite_code_required"})
 
     seat = int(body.seat or 1)
-
-    alias = body.model_alias
-    if alias is not None and alias not in set(get_allowed_model_aliases()):
-        return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
 
     # Gather state under lock (fast) so we don't hold it during the LLM call.
     async with _get_table_lock(table_id):
@@ -992,6 +1179,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
                 llm_enabled = data.get("llm_enabled")
                 model_alias = data.get("model_alias")
                 invite_code = data.get("invite_code")
+                invite_session_id = data.get("invite_session_id")
 
                 if model_alias is not None and model_alias not in set(get_allowed_model_aliases()):
                     await websocket.send_json(
@@ -1017,7 +1205,27 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     if invite_valid is True:
                         pass
                     elif invite_code_str:
-                        invite_valid = await _validate_invite_code_async(invite_code_str)
+                        ws_host = websocket.client.host if websocket.client is not None else ""
+                        result = await _check_invite_code_async(
+                            invite_code_str,
+                            session_id=str(invite_session_id or "").strip(),
+                            model_alias=str(model_alias or get_current_model_alias()).strip(),
+                        )
+                        invite_valid = result.ok
+                        if not result.ok:
+                            if _invite_failure_rate_limited(
+                                interface="ws_settings",
+                                host=ws_host,
+                                invite_code=invite_code_str,
+                            ):
+                                await websocket.send_json(
+                                    {
+                                        "type": "client_settings_ack",
+                                        "invite_valid": False,
+                                        "error": "rate_limited",
+                                    }
+                                )
+                                continue
                     else:
                         # Empty string means user cleared the code
                         invite_valid = False
@@ -1027,6 +1235,9 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     llm_enabled=bool(llm_enabled) if llm_enabled is not None else None,
                     model_alias=str(model_alias) if model_alias is not None else None,
                     invite_code=str(invite_code) if invite_code is not None else None,
+                    invite_session_id=(
+                        str(invite_session_id) if invite_session_id is not None else None
+                    ),
                     invite_valid=invite_valid,
                 )
                 await websocket.send_json(

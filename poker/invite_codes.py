@@ -10,6 +10,8 @@ import os
 import secrets
 import sqlite3
 import string
+import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -20,6 +22,13 @@ def _generate_code() -> str:
     chars = string.ascii_uppercase + string.digits
     suffix = "".join(secrets.choice(chars) for _ in range(6))
     return f"POKER-{suffix}"
+
+
+@dataclass(frozen=True)
+class InviteValidationResult:
+    ok: bool
+    reason: str = ""
+    code: str = ""
 
 
 class InviteCodeStore:
@@ -61,7 +70,109 @@ class InviteCodeStore:
                     last_used_at TEXT
                 )
             """)
+            existing = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(invite_codes)").fetchall()
+            }
+            migrations = {
+                "expires_at": "ALTER TABLE invite_codes ADD COLUMN expires_at TEXT",
+                "max_uses": "ALTER TABLE invite_codes ADD COLUMN max_uses INTEGER",
+                "use_count": (
+                    "ALTER TABLE invite_codes ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0"
+                ),
+                "daily_quota": "ALTER TABLE invite_codes ADD COLUMN daily_quota INTEGER",
+                "daily_used_on": "ALTER TABLE invite_codes ADD COLUMN daily_used_on TEXT",
+                "daily_use_count": (
+                    "ALTER TABLE invite_codes ADD COLUMN daily_use_count INTEGER NOT NULL DEFAULT 0"
+                ),
+                "allowed_model_aliases": (
+                    "ALTER TABLE invite_codes ADD COLUMN allowed_model_aliases TEXT"
+                ),
+                "session_id": "ALTER TABLE invite_codes ADD COLUMN session_id TEXT",
+                "bound_at": "ALTER TABLE invite_codes ADD COLUMN bound_at TEXT",
+            }
+            for column, sql in migrations.items():
+                if column not in existing:
+                    conn.execute(sql)
             conn.commit()
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _parse_dt(raw: Optional[str]) -> Optional[datetime]:
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(raw))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_session_id(session_id: Optional[str]) -> str:
+        return str(session_id or "").strip()[:128]
+
+    @staticmethod
+    def _allowed_models(raw: Optional[str]) -> List[str]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except Exception:
+            pass
+        return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+    @staticmethod
+    def _encode_models(models: Optional[List[str]]) -> Optional[str]:
+        if not models:
+            return None
+        clean = [str(model).strip() for model in models if str(model).strip()]
+        return json.dumps(clean, separators=(",", ":")) if clean else None
+
+    def _check_row(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        code: str,
+        session_id: Optional[str],
+        model_alias: Optional[str],
+        bind_session: bool,
+        require_session: bool,
+    ) -> InviteValidationResult:
+        if not row["is_active"]:
+            return InviteValidationResult(False, "revoked", code)
+
+        expires_at = self._parse_dt(row["expires_at"])
+        if expires_at is not None and expires_at <= self._utc_now():
+            return InviteValidationResult(False, "expired", code)
+
+        model = str(model_alias or "").strip()
+        allowed_models = self._allowed_models(row["allowed_model_aliases"])
+        if model and allowed_models and model not in set(allowed_models):
+            return InviteValidationResult(False, "model_not_allowed", code)
+
+        normalized_session = self._normalize_session_id(session_id)
+        if require_session and not normalized_session:
+            return InviteValidationResult(False, "session_required", code)
+        existing_session = str(row["session_id"] or "").strip()
+        if existing_session:
+            if (require_session or normalized_session) and normalized_session != existing_session:
+                return InviteValidationResult(False, "session_mismatch", code)
+        elif bind_session and normalized_session:
+            now = self._utc_now().isoformat()
+            conn.execute(
+                "UPDATE invite_codes SET session_id = ?, bound_at = ? WHERE code = ?",
+                (normalized_session, now, code),
+            )
+
+        return InviteValidationResult(True, "", code)
 
     def validate_code(self, code: str) -> bool:
         """Check if an invite code is valid and active.
@@ -85,45 +196,138 @@ class InviteCodeStore:
         if not code:
             return False
 
+        return self.check_code(code).ok
+
+    def check_code(
+        self,
+        code: str,
+        *,
+        session_id: Optional[str] = None,
+        model_alias: Optional[str] = None,
+        bind_session: bool = True,
+        require_session: bool = False,
+        update_last_used: bool = True,
+    ) -> InviteValidationResult:
+        """Validate an invite code without consuming LLM quota."""
+        if not code or not isinstance(code, str):
+            return InviteValidationResult(False, "missing")
+
+        code = code.strip().upper()
+        if not code:
+            return InviteValidationResult(False, "missing")
+
         try:
             with self._get_conn() as conn:
-                cursor = conn.execute(
-                    "SELECT is_active, last_used_at FROM invite_codes WHERE code = ?",
-                    (code,),
-                )
+                cursor = conn.execute("SELECT * FROM invite_codes WHERE code = ?", (code,))
                 row = cursor.fetchone()
 
                 if row is None:
-                    return False
+                    return InviteValidationResult(False, "not_found", code)
 
-                if not row["is_active"]:
-                    return False
+                result = self._check_row(
+                    conn,
+                    row,
+                    code=code,
+                    session_id=session_id,
+                    model_alias=model_alias,
+                    bind_session=bind_session,
+                    require_session=require_session,
+                )
+                if not result.ok:
+                    return result
 
-                # Update last_used_at (rate-limited)
-                should_update_last_used = True
-                try:
-                    last_used_raw = row["last_used_at"]
-                    if last_used_raw:
-                        last_used_dt = datetime.fromisoformat(str(last_used_raw))
-                        now_dt = datetime.now(timezone.utc)
-                        if last_used_dt.tzinfo is None:
-                            last_used_dt = last_used_dt.replace(tzinfo=timezone.utc)
-                        should_update_last_used = (now_dt - last_used_dt).total_seconds() >= 60
-                except Exception:
+                if update_last_used:
                     should_update_last_used = True
-
-                if should_update_last_used:
-                    now = datetime.now(timezone.utc).isoformat()
-                    conn.execute(
-                        "UPDATE invite_codes SET last_used_at = ? WHERE code = ?",
-                        (now, code),
-                    )
-                    conn.commit()
-                return True
+                    last_used_dt = self._parse_dt(row["last_used_at"])
+                    now_dt = self._utc_now()
+                    if last_used_dt is not None:
+                        should_update_last_used = (
+                            now_dt - last_used_dt
+                        ).total_seconds() >= 60
+                    if should_update_last_used:
+                        conn.execute(
+                            "UPDATE invite_codes SET last_used_at = ? WHERE code = ?",
+                            (now_dt.isoformat(), code),
+                        )
+                conn.commit()
+                return result
         except sqlite3.Error:
-            return False
+            return InviteValidationResult(False, "store_error", code)
 
-    def create_code(self, note: Optional[str] = None) -> str:
+    def consume_llm_call(
+        self,
+        code: str,
+        *,
+        session_id: Optional[str] = None,
+        model_alias: Optional[str] = None,
+        require_session: bool = False,
+    ) -> InviteValidationResult:
+        """Validate an invite code and consume one LLM call quota."""
+        if not code or not isinstance(code, str):
+            return InviteValidationResult(False, "missing")
+
+        code = code.strip().upper()
+        today = self._utc_now().date().isoformat()
+
+        try:
+            with self._get_conn() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute("SELECT * FROM invite_codes WHERE code = ?", (code,))
+                row = cursor.fetchone()
+                if row is None:
+                    return InviteValidationResult(False, "not_found", code)
+
+                result = self._check_row(
+                    conn,
+                    row,
+                    code=code,
+                    session_id=session_id,
+                    model_alias=model_alias,
+                    bind_session=True,
+                    require_session=require_session,
+                )
+                if not result.ok:
+                    return result
+
+                max_uses = row["max_uses"]
+                use_count = int(row["use_count"] or 0)
+                if max_uses is not None and use_count >= int(max_uses):
+                    return InviteValidationResult(False, "usage_exhausted", code)
+
+                daily_quota = row["daily_quota"]
+                daily_used_on = str(row["daily_used_on"] or "")
+                daily_use_count = int(row["daily_use_count"] or 0)
+                if daily_used_on != today:
+                    daily_use_count = 0
+                if daily_quota is not None and daily_use_count >= int(daily_quota):
+                    return InviteValidationResult(False, "daily_quota_exhausted", code)
+
+                now = self._utc_now().isoformat()
+                conn.execute(
+                    """
+                    UPDATE invite_codes
+                    SET use_count = use_count + 1,
+                        daily_used_on = ?,
+                        daily_use_count = ?,
+                        last_used_at = ?
+                    WHERE code = ?
+                    """,
+                    (today, daily_use_count + 1, now, code),
+                )
+                conn.commit()
+                return InviteValidationResult(True, "", code)
+        except sqlite3.Error:
+            return InviteValidationResult(False, "store_error", code)
+
+    def create_code(
+        self,
+        note: Optional[str] = None,
+        *,
+        expires_at: Optional[str] = None,
+        max_uses: Optional[int] = None,
+        daily_quota: Optional[int] = None,
+        allowed_model_aliases: Optional[List[str]] = None,
+    ) -> str:
         """Generate and store a new invite code.
 
         Args:
@@ -141,10 +345,21 @@ class InviteCodeStore:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO invite_codes (code, created_at, is_active, note)
-                        VALUES (?, ?, 1, ?)
+                        INSERT INTO invite_codes (
+                            code, created_at, is_active, note, expires_at, max_uses,
+                            daily_quota, allowed_model_aliases
+                        )
+                        VALUES (?, ?, 1, ?, ?, ?, ?, ?)
                         """,
-                        (code, now, note),
+                        (
+                            code,
+                            now,
+                            note,
+                            expires_at,
+                            max_uses,
+                            daily_quota,
+                            self._encode_models(allowed_model_aliases),
+                        ),
                     )
                     conn.commit()
                     return code

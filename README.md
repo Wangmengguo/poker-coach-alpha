@@ -110,6 +110,14 @@ The AI Coach LLM features are protected by an invite code system. Users must ent
 # Create a new invite code
 docker compose exec poker python -m tools.manage_invites create --note "For friend A"
 
+# Create a limited invite code
+docker compose exec poker python -m tools.manage_invites create \
+  --note "For friend A" \
+  --expires-at "2026-05-01T00:00:00+00:00" \
+  --max-uses 100 \
+  --daily-quota 20 \
+  --models fast,balanced
+
 # List all invite codes
 docker compose exec poker python -m tools.manage_invites list
 
@@ -128,6 +136,14 @@ source .venv/bin/activate
 # Create a new invite code
 python -m tools.manage_invites create --note "For friend A"
 
+# Create a limited invite code
+python -m tools.manage_invites create \
+  --note "For friend A" \
+  --expires-at "2026-05-01T00:00:00+00:00" \
+  --max-uses 100 \
+  --daily-quota 20 \
+  --models fast,balanced
+
 # List all invite codes
 python -m tools.manage_invites list
 
@@ -138,7 +154,7 @@ python -m tools.manage_invites revoke POKER-ABC123
 python -m tools.manage_invites check POKER-ABC123
 ```
 
-Invite codes are stored in a SQLite database (`data/invites.db` by default). The database is automatically created on first use.
+Invite codes are stored in a SQLite database (`data/invites.db` by default). The database is automatically created on first use. Codes can optionally enforce an expiry time, total LLM call limit, daily LLM call quota, and allowed model tiers. A code is bound to the first anonymous browser session that validates it.
 
 ### Using Invite Codes
 
@@ -231,4 +247,8 @@ Each run plays `--num-hands` hands with one LLM-controlled seat (via `LlmBot`) a
 
 ## Next
 
-We will implement the TableService around pokerkit, bots, and the WS protocol per PLAN.md.
+Infrastructure is in place. Current focus is deepening the AI coaching strategy:
+
+- Enhance hand-strength and decision-math metrics per `COACH_IMPLEMENTATION_PLAN.md`
+- Integrate GTO-informed heuristics and bot algorithms (see research docs in repo root)
+- Extend real-time coach UI (drawer, pot odds, SPR, board texture)
