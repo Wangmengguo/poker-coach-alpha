@@ -32,6 +32,7 @@ from poker.ai_coach import (
 )
 from poker.invite_codes import InviteCodeStore, InviteValidationResult
 from poker.llm_config import (
+    get_tier_timeout_seconds,
     list_gateway_models,
     public_config,
     resolve_model_id,
@@ -1208,8 +1209,14 @@ async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceR
 
     # LLM call outside lock.
     try:
+        tier_timeout = get_tier_timeout_seconds(alias)
         async with use_model_alias(alias):
-            advice = await generate_ai_advice(dc, legal_actions, _ai_provider, history)
+            advice = await asyncio.wait_for(
+                generate_ai_advice(dc, legal_actions, _ai_provider, history),
+                timeout=max(5.0, tier_timeout + 5.0),
+            )
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=504, content={"error": "llm_timeout"})
     except Exception:
         return JSONResponse(status_code=500, content={"error": "llm_request_failed"})
 
@@ -1230,6 +1237,40 @@ async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceR
             "reason": advice.reason,
         },
     }
+
+
+async def _send_decision_analysis(table_id: str, seat: int, websocket: WebSocket) -> None:
+    """Push pot-odds / SPR analysis to one client (e.g. after reconnect mid-turn)."""
+    async with _get_table_lock(table_id):
+        engine = _engines.get(table_id)
+        if not engine or engine.state is None:
+            return
+        idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+        if idx is None:
+            return
+        try:
+            positions_map = engine._positions_map()  # type: ignore[attr-defined]
+        except Exception:
+            positions_map = None
+        try:
+            _, analysis_payload = compose_analysis(
+                engine.state,
+                idx,
+                seat,
+                session_stats=getattr(engine, "session_stats", None),
+                positions_map=positions_map,
+                include_hand_strength=False,
+            )
+        except Exception:
+            return
+
+    try:
+        await manager.send(
+            websocket,
+            {"type": "decision_analysis", "to_act": seat, "analysis": analysis_payload},
+        )
+    except Exception:
+        pass
 
 
 async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
@@ -1297,6 +1338,35 @@ async def next_hand(table_id: str):
     return {"hand_id": hand_id}
 
 
+@app.get("/tables/{table_id}/analysis")
+@app.get(f"{APP_PREFIX}/tables/{{table_id}}/analysis")
+def get_table_analysis(table_id: str, seat: int = 1):
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
+    if engine.state is None:
+        return JSONResponse(status_code=400, content={"error": "session_not_active"})
+    idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
+    if idx is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_seat"})
+    try:
+        positions_map = engine._positions_map()  # type: ignore[attr-defined]
+    except Exception:
+        positions_map = None
+    try:
+        _, analysis_payload = compose_analysis(
+            engine.state,
+            idx,
+            seat,
+            session_stats=getattr(engine, "session_stats", None),
+            positions_map=positions_map,
+            include_hand_strength=False,
+        )
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "analysis_failed"})
+    return {"analysis": analysis_payload}
+
+
 @app.get("/tables/{table_id}/state")
 @app.get(f"{APP_PREFIX}/tables/{{table_id}}/state")
 def get_state(table_id: str):
@@ -1356,6 +1426,9 @@ async def ws_table(websocket: WebSocket, table_id: str):
                     seat_act = engine._state_index_to_seat(idx)
                     if seat_act == 1:
                         asyncio.create_task(_schedule_prompt_tasks(table_id, seat_act))
+                        asyncio.create_task(
+                            _send_decision_analysis(table_id, seat_act, websocket)
+                        )
             except Exception:
                 pass
         # Main loop: receive client actions and advance engine

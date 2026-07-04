@@ -209,9 +209,26 @@ def get_model_tiers() -> List[Dict[str, Any]]:
                 "label": tier.get("label") or tier_id,
                 "enabled": bool(tier.get("enabled", True)),
                 "cost_level": tier.get("cost_level") or "medium",
+                "timeout_seconds": float(
+                    tier.get("timeout_seconds")
+                    or _env_default_tiers().get(tier_id, {}).get("timeout_seconds", 20)
+                ),
             }
         )
     return result
+
+
+def get_tier_timeout_seconds(alias_or_tier: Optional[str] = None) -> float:
+    cfg = load_llm_config()
+    tier_id = str(alias_or_tier or cfg.get("default_tier") or "balanced").strip()
+    tiers = cfg.get("tiers", {})
+    tier = tiers.get(tier_id, {}) if isinstance(tiers, dict) else {}
+    defaults = _env_default_tiers()
+    fallback = float(defaults.get(tier_id, {}).get("timeout_seconds", 20))
+    try:
+        return float(tier.get("timeout_seconds", fallback))
+    except Exception:
+        return fallback
 
 
 def get_enabled_tier_ids() -> List[str]:

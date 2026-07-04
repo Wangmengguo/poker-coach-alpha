@@ -55,8 +55,23 @@ export class MessageQueue {
    * @param {Object} msg - WebSocket message
    */
   enqueue(msg) {
+    // User turns must not wait behind bot-action animation backlog.
+    if (msg && msg.type === 'prompt') {
+      if (this._currentTimeout) {
+        clearTimeout(this._currentTimeout);
+        this._currentTimeout = null;
+      }
+      this.processing = false;
+      this.queue = this.queue.filter((m) => m.type !== 'prompt');
+      this.queue.unshift(msg);
+      this._notifyQueueChange();
+      if (!this.paused) {
+        this._processNext();
+      }
+      return;
+    }
+
     // All messages go through the queue normally so bot actions animate properly.
-    // prompt messages are no longer special-cased to flush the queue.
     this.queue.push(msg);
     this._notifyQueueChange();
 

@@ -1,4 +1,5 @@
 import { withBase } from '../utils/constants.js';
+import { setVisible } from '../utils/dom.js';
 
 /**
  * ActionHandler wires UI buttons to backend REST endpoints and WebSocket actions.

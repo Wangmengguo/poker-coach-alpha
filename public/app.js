@@ -1,11 +1,11 @@
-import { GameState } from './modules/state.js';
-import { WebSocketManager } from './modules/websocket.js';
-import { Renderer } from './modules/renderer.js';
-import { ActionHandler } from './modules/actions.js';
-import { AnalysisDrawer } from './modules/analysis.js';
-import { audioManager } from './modules/audio.js';
-import { MessageQueue, SPEED_PRESETS } from './modules/messageQueue.js';
-import { withBase, wsAbsoluteUrl } from './utils/constants.js';
+import { GameState } from './modules/state.js?v=18';
+import { WebSocketManager } from './modules/websocket.js?v=18';
+import { Renderer } from './modules/renderer.js?v=18';
+import { ActionHandler } from './modules/actions.js?v=18';
+import { AnalysisDrawer } from './modules/analysis.js?v=18';
+import { audioManager } from './modules/audio.js?v=18';
+import { MessageQueue, SPEED_PRESETS } from './modules/messageQueue.js?v=18';
+import { withBase, wsAbsoluteUrl } from './utils/constants.js?v=18';
 
 const gameState = new GameState();
 const renderer = new Renderer();
@@ -96,6 +96,81 @@ function _getTableSessionId() {
   return sessionId;
 }
 
+function _applyDecisionAnalysis(analysis, autoOpen = false) {
+  if (!analysis) return;
+  analysisDrawer.updateAndRender(
+    {
+      pot_math: analysis.pot_math || null,
+      pot_extra: analysis.pot_extra || null,
+      stats: analysis.stats || null,
+      board_texture: analysis.board_texture || null,
+      hand_label: analysis.hand && analysis.hand.label ? analysis.hand.label : null,
+      outs: analysis.outs || null,
+      context: analysis.context || null,
+      range_equity: analysis.range_equity || null,
+    },
+    autoOpen,
+  );
+}
+
+async function _refreshDecisionAnalysisFromServer() {
+  const tableId = gameState.getTableId();
+  const table = gameState.getTable();
+  if (!tableId || !table || Number(table.to_act) !== 1) return;
+  try {
+    const res = await fetch(withBase(`/tables/${tableId}/analysis?seat=1`));
+    if (!res.ok) return;
+    const data = await res.json();
+    _applyDecisionAnalysis(data.analysis);
+  } catch (e) {
+    // ignore transient network errors
+  }
+}
+
+function _syncActionUiFromTable(table) {
+  if (!table) return;
+  const legal = Array.isArray(table.legal_actions) ? table.legal_actions : [];
+  const actionsEl = document.getElementById('actions');
+  const nextHandBtn = document.getElementById('nextHandBtn');
+  const heroSeat = 1;
+
+  if (table.awaiting_next_hand) {
+    if (actionsEl) actionsEl.innerHTML = '';
+    if (nextHandBtn) nextHandBtn.style.display = 'inline-block';
+    return;
+  }
+
+  if (nextHandBtn) nextHandBtn.style.display = 'none';
+
+  if (Number(table.to_act) === heroSeat && legal.length > 0) {
+    actionHandler.renderActions(legal);
+    return;
+  }
+
+  if (Number(table.to_act) !== heroSeat && actionsEl) {
+    actionsEl.innerHTML = '';
+  }
+}
+
+async function _resyncTableUiFromServer() {
+  const tableId = gameState.getTableId();
+  if (!tableId) return;
+  try {
+    const res = await fetch(withBase(`/tables/${tableId}/state`));
+    if (!res.ok) return;
+    const msg = await res.json();
+    if (msg.type !== 'snapshot' || !msg.table) return;
+    gameState.updateSnapshot(msg);
+    renderer.renderState(msg.table, gameState.snapshot);
+    _syncActionUiFromTable(msg.table);
+    if (Number(msg.table.to_act) === 1) {
+      await _refreshDecisionAnalysisFromServer();
+    }
+  } catch (e) {
+    // ignore transient network errors during reconnect
+  }
+}
+
 function _resetSessionUiAfterServerRestart() {
   const actionsEl = document.getElementById('actions');
   if (actionsEl) actionsEl.innerHTML = '';
@@ -121,6 +196,34 @@ function _setInviteStatus(status) {
   const statusEl = document.getElementById('inviteStatus');
   if (!statusEl) return;
   statusEl.dataset.status = status || '';
+}
+
+function _llmClientTimeoutMs(modelAlias, tiers) {
+  const tier = Array.isArray(tiers)
+    ? tiers.find((t) => t && t.id === modelAlias)
+    : null;
+  const serverTimeoutSec = Number(tier?.timeout_seconds);
+  const baseSec = Number.isFinite(serverTimeoutSec) && serverTimeoutSec > 0
+    ? serverTimeoutSec
+    : 20;
+  // Client waits longer than the server tier timeout (+15s buffer for gateway latency).
+  return Math.min(120000, Math.max(25000, (baseSec + 15) * 1000));
+}
+
+function _formatLlmAdviceError(err, statusCode) {
+  if (err?.name === 'AbortError') {
+    return 'LLM request timed out (model is slow). Try Fast tier or retry.';
+  }
+  if (statusCode === 403) {
+    return 'Invite code rejected. Check the code and green checkmark beside it.';
+  }
+  if (statusCode === 429) {
+    return 'Too many LLM requests. Wait a moment and retry.';
+  }
+  if (statusCode === 504) {
+    return 'LLM gateway timed out. Try Fast tier or retry later.';
+  }
+  return err?.message ? String(err.message) : 'Unknown error';
 }
 
 async function initModelSelector() {
@@ -242,9 +345,11 @@ async function initModelSelector() {
         askInFlight = true;
         askLlmBtn.disabled = true;
         _setAskButtonState(askLlmBtn, 'loading', 'Asking…');
+        let statusCode = 0;
         try {
+          const clientTimeoutMs = _llmClientTimeoutMs(alias, availableTiers);
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 15000);
+          const timer = setTimeout(() => controller.abort(), clientTimeoutMs);
           const llmRes = await fetch(withBase(`/tables/${tableId}/ai_advice/llm`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -252,6 +357,7 @@ async function initModelSelector() {
             signal: controller.signal,
           });
           clearTimeout(timer);
+          statusCode = llmRes.status;
           if (!llmRes.ok) {
             let err = null;
             try {
@@ -268,7 +374,7 @@ async function initModelSelector() {
           processMessage(adviceMsg);
           _setAskButtonState(askLlmBtn, 'success', 'Done');
         } catch (e) {
-          renderer.log(`Error requesting LLM advice: ${e}`);
+          renderer.log(`Error requesting LLM advice: ${_formatLlmAdviceError(e, statusCode)}`);
           _setAskButtonState(askLlmBtn, 'error', 'Failed');
         } finally {
           askInFlight = false;
@@ -335,37 +441,41 @@ function processMessage(msg) {
         renderer.log('Session was reset (server restarted)');
         break;
       }
+      const table = msg.table || {};
+      const prevTable = gameState.getTable();
+      const handChanged = !!(
+        prevTable?.hand_id && table.hand_id && prevTable.hand_id !== table.hand_id
+      );
+      const isHeroTurn = Number(table.to_act) === 1;
+
       gameState.updateSnapshot(msg);
       renderer.renderState(msg.table, gameState.snapshot);
-      gameState.updateAnalysis({
-        pot_math: null,
-        pot_extra: null,
-        board_texture: null,
-        hand_label: null,
-        outs: null,
-        stats: null,
-        context: null,
-        hand_strength: null,
-      });
+
+      // Snapshots are frequent; only clear decision math when the hand changes
+      // or action passes to a bot. (Previously every snapshot wiped pot_math.)
+      if (handChanged || !isHeroTurn) {
+        gameState.updateAnalysis({
+          pot_math: null,
+          pot_extra: null,
+          board_texture: null,
+          hand_label: null,
+          outs: null,
+          context: null,
+          range_equity: null,
+        });
+      }
       renderer.renderAnalysisDrawer(gameState.analysis);
+
+      if (isHeroTurn && !gameState.analysis.pot_math) {
+        _refreshDecisionAnalysisFromServer();
+      }
       // On reload, server only sends a snapshot (no prompt/hand_end),
       // so infer UI state from the table metadata.
       try {
-        const table = msg.table || {};
-        const legal = Array.isArray(table.legal_actions) ? table.legal_actions : [];
-        const actionsEl = document.getElementById('actions');
-        const nextHandBtn = document.getElementById('nextHandBtn');
-        
-        if (table.awaiting_next_hand) {
-          // Clear action buttons before showing Continue
-          if (actionsEl) actionsEl.innerHTML = '';
-          if (nextHandBtn) nextHandBtn.style.display = 'inline-block';
-        } else if (legal.length > 0 && table.to_act === 1) {
-          // renderActions will hide Continue button
-          actionHandler.renderActions(legal);
-        }
+        _syncActionUiFromTable(msg.table);
       } catch (e) {
-        // ignore
+        console.error('Failed to sync action UI from snapshot', e);
+        renderer.log('Could not show action buttons; try refreshing the page.');
       }
       break;
     }
@@ -376,20 +486,15 @@ function processMessage(msg) {
       renderer.announce(`Your turn, ${legal.length} options`);
       audioManager.play('turn');
       try {
-        const analysis = msg.analysis || {};
-        analysisDrawer.updateAndRender(
-          {
-            pot_math: analysis.pot_math || null,
-            pot_extra: analysis.pot_extra || null,
-            stats: analysis.stats || null,
-            board_texture: analysis.board_texture || null,
-            hand_label: analysis.hand && analysis.hand.label ? analysis.hand.label : null,
-            outs: analysis.outs || null,
-            context: analysis.context || null,
-            hand_strength: null,
-          },
-          true,
-        );
+        _applyDecisionAnalysis(msg.analysis || {}, true);
+      } catch (e) {
+        // ignore
+      }
+      break;
+    }
+    case 'decision_analysis': {
+      try {
+        _applyDecisionAnalysis(msg.analysis || {});
       } catch (e) {
         // ignore
       }
@@ -684,6 +789,7 @@ wsManager.on('open', () => {
   }
 
   initModelSelector();
+  _resyncTableUiFromServer();
 });
 
 wsManager.on('reconnecting', ({ attempts }) => {
