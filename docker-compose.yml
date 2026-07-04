@@ -36,6 +36,10 @@ services:
       - ADMIN_TOKEN=${ADMIN_TOKEN:-}
       - LOCAL_ADMIN_BYPASS=${LOCAL_ADMIN_BYPASS:-0}
       - LOCAL_INVITE_BYPASS=${LOCAL_INVITE_BYPASS:-0}
+      # Trust X-Forwarded-For from reverse proxy so rate limits see real client IPs.
+      # Default * is safe when POKER_BIND_ADDR=127.0.0.1 (Nginx-only access).
+      # If you expose 8010 publicly (POKER_BIND_ADDR=0.0.0.0), restrict to your proxy IP.
+      - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-*}
       
       # Optional: Debug mode for AI Coach
       - AI_COACH_DEBUG=${AI_COACH_DEBUG:-0}

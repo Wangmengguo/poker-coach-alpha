@@ -81,23 +81,26 @@ If `AI_PROVIDER` is unset or misconfigured, or the LLM call fails, the coach wil
 
 ### Switching models at runtime
 
-To inspect and change the current model without restarting the server, use the REST settings endpoint:
-
-- Get current model and allowed list:
+To inspect the current model tier list:
 
 ```bash
 curl http://localhost:8000/settings/ai_model
 ```
 
-- Change model (must be one of the allowed names from `ALLOWED_MODELS`):
+Changing the **global default** model requires admin access (header only; do not pass token in URL):
 
 ```bash
 curl -X POST http://localhost:8000/settings/ai_model \
   -H "Content-Type: application/json" \
-  -d '{"model_alias": "deepseek-chat"}'
+  -H "x-admin-token: YOUR_ADMIN_TOKEN" \
+  -d '{"model_alias": "fast"}'
 ```
 
-The frontend can call the same endpoint to implement a simple model selector (e.g. a dropdown showing `claude-4.5-sonnet`, `deepseek-chat`, etc.). Only the model name travels over the wire; keys and provider-specific configuration stay on the backend.
+End users switch models per browser via the frontend model selector (WebSocket `client_settings`); that path does not require admin access.
+
+### LLM Admin page
+
+Open `/cards/admin/llm` (or `/admin/llm` in local dev). Enter `ADMIN_TOKEN` in the page unlock form; the token is stored in `sessionStorage` and sent only via the `x-admin-token` header.
 
 ## Invite Code System
 
@@ -122,10 +125,10 @@ docker compose exec poker python -m tools.manage_invites create \
 docker compose exec poker python -m tools.manage_invites list
 
 # Revoke an invite code
-docker compose exec poker python -m tools.manage_invites revoke POKER-ABC123
+docker compose exec poker python -m tools.manage_invites revoke POKER-ABCD1234
 
 # Check if a code is valid
-docker compose exec poker python -m tools.manage_invites check POKER-ABC123
+docker compose exec poker python -m tools.manage_invites check POKER-ABCD1234
 ```
 
 **Using Local Python:**
@@ -148,10 +151,10 @@ python -m tools.manage_invites create \
 python -m tools.manage_invites list
 
 # Revoke an invite code
-python -m tools.manage_invites revoke POKER-ABC123
+python -m tools.manage_invites revoke POKER-ABCD1234
 
 # Check if a code is valid
-python -m tools.manage_invites check POKER-ABC123
+python -m tools.manage_invites check POKER-ABCD1234
 ```
 
 Invite codes are stored in a SQLite database (`data/invites.db` by default). The database is automatically created on first use. Codes can optionally enforce an expiry time, total LLM call limit, daily LLM call quota, and allowed model tiers. A code is bound to the first anonymous browser session that validates it.
@@ -220,7 +223,14 @@ docker compose up -d --build
 
 - The Dockerfile uses `--workers 1` because game state is stored in memory
 - Resource limits are set in `docker-compose.yml` (adjust based on your server)
-- For production, consider:
+- **Token abuse protection (production checklist):**
+  - Set a strong `ADMIN_TOKEN` (32+ random characters)
+  - Keep `LOCAL_ADMIN_BYPASS=0` and `LOCAL_INVITE_BYPASS=0`
+  - Use Nginx in front; keep `POKER_BIND_ADDR=127.0.0.1` so `FORWARDED_ALLOW_IPS=*` is safe
+  - If exposing port 8010 publicly, set `FORWARDED_ALLOW_IPS` to your proxy IP only
+  - Open `/cards/admin/llm` and enter the admin token in the page (never in URL query strings)
+  - Create invite codes with `--max-uses` and `--daily-quota` limits
+- For production, also consider:
   - Using a reverse proxy (Nginx) for SSL/TLS
   - Setting up proper backup for `./data` directory
   - Configuring log rotation (already configured in docker-compose.yml)

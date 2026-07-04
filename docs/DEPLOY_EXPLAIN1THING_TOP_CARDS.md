@@ -691,6 +691,29 @@ cd /opt/poker-coach-alpha
 chmod 600 .env
 ```
 
+### 15.2.2 生产环境 Token 滥用防护（必做）
+
+上线前请确认 `.env` 至少满足：
+
+```bash
+# 必填：Admin 页面与受保护 API 使用（随机 32+ 字符）
+ADMIN_TOKEN=YOUR_RANDOM_ADMIN_TOKEN
+
+# 必须为 0（生产环境禁止绕过）
+LOCAL_ADMIN_BYPASS=0
+LOCAL_INVITE_BYPASS=0
+
+# Nginx 反代 + POKER_BIND_ADDR=127.0.0.1 时可保持默认
+FORWARDED_ALLOW_IPS=*
+```
+
+说明：
+
+- Docker 镜像已启用 `uvicorn --proxy-headers`，配合 Nginx 的 `X-Real-IP` / `X-Forwarded-For`，按 IP 的 LLM 限流才会生效。
+- Admin 配置页：`https://explain1thing.top/cards/admin/llm`，在页面内输入 `ADMIN_TOKEN`（存于 `sessionStorage`，仅通过 `x-admin-token` Header 发送）。**不要把 token 写在 URL 里**（会进 access log）。
+- `POST /settings/ai_model` 已改为 Admin 专用；普通用户通过前端模型下拉切换（WebSocket），不会改全局默认档。
+- 创建邀请码时建议加配额：`--max-uses` + `--daily-quota`。
+
 ### 15.3 启动 Docker 服务
 
 ```bash

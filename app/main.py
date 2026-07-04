@@ -5,6 +5,7 @@ from typing import Dict, Optional, Set
 import asyncio
 from dataclasses import dataclass
 import os
+import secrets
 import time
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -187,8 +188,7 @@ def _is_admin_request(request: Request) -> bool:
     token = os.getenv("ADMIN_TOKEN", "").strip()
     if token:
         supplied = request.headers.get("x-admin-token", "").strip()
-        supplied = supplied or request.query_params.get("admin_token", "").strip()
-        if supplied == token:
+        if supplied and secrets.compare_digest(supplied, token):
             return True
     allow_local = os.getenv("LOCAL_ADMIN_BYPASS", "0").strip().lower() in {
         "1",
@@ -197,6 +197,17 @@ def _is_admin_request(request: Request) -> bool:
         "on",
     }
     return allow_local and _is_local_host(_client_host(request))
+
+
+_INVITE_ENUMERATION_REASONS = frozenset({"not_found", "expired", "revoked", "missing"})
+
+
+def _public_invite_failure_reason(reason: str) -> str:
+    """Map internal invite failure reasons to a public-safe response."""
+    normalized = str(reason or "").strip()
+    if normalized in _INVITE_ENUMERATION_REASONS:
+        return "invalid_invite"
+    return normalized or "invalid_invite"
 
 
 def _local_invite_bypass_enabled(request: Optional[Request] = None) -> bool:
@@ -344,7 +355,7 @@ def _llm_call_rate_limited(
         [
             (
                 ("llm_call_ip", interface, normalized_host),
-                _env_int("LLM_CALL_IP_LIMIT", 60),
+                _env_int("LLM_CALL_IP_LIMIT", 30),
                 window,
             ),
             (
@@ -386,6 +397,9 @@ ADMIN_LLM_HTML = """
       header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
       h1 { font-size: 24px; margin: 0; }
       h2 { font-size: 16px; margin: 0 0 12px; color: #d4af37; }
+      .auth-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+      .auth-row label { flex: 1 1 240px; }
+      .auth-row button { width: auto; align-self: end; }
       section { border-top: 1px solid rgba(255,255,255,.12); padding: 18px 0; }
       label { display: grid; gap: 6px; color: #9ca3af; font-size: 13px; }
       input, select { width: 100%; border: 1px solid #2f4863; border-radius: 6px; background: #101c29; color: #e6eef5; padding: 9px 10px; font: inherit; }
@@ -407,6 +421,17 @@ ADMIN_LLM_HTML = """
         <h1>LLM Admin</h1>
         <a href="../" style="color:#d4af37">Back to app</a>
       </header>
+      <section>
+        <h2>Admin Access</h2>
+        <div class="auth-row">
+          <label>Admin Token
+            <input id="adminTokenInput" type="password" placeholder="Enter ADMIN_TOKEN" autocomplete="off" />
+          </label>
+          <button id="unlockBtn" type="button">Unlock</button>
+        </div>
+        <p id="authStatus" class="status"></p>
+      </section>
+      <div id="adminContent" hidden>
       <section>
         <h2>Gateway</h2>
         <div class="grid">
@@ -445,15 +470,65 @@ ADMIN_LLM_HTML = """
         <p id="status" class="status"></p>
         <div id="models" class="models" hidden></div>
       </section>
+      </div>
     </main>
     <script>
       const tierIds = ["smart", "balanced", "fast"];
+      const TOKEN_KEY = "pokerCoach.adminToken";
       let loaded = null;
-      const adminToken = new URLSearchParams(window.location.search).get("admin_token") || "";
+      function getAdminToken() {
+        try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+      }
+      function setAdminToken(val) {
+        try { sessionStorage.setItem(TOKEN_KEY, val || ""); } catch (e) {}
+      }
+      function clearAdminToken() {
+        setAdminToken("");
+        const input = document.getElementById("adminTokenInput");
+        if (input) input.value = "";
+      }
+      function setAuthStatus(text) {
+        const el = document.getElementById("authStatus");
+        if (el) el.textContent = text || "";
+      }
+      function showAdminContent(show) {
+        const el = document.getElementById("adminContent");
+        if (el) el.hidden = !show;
+      }
       function api(path, opts = {}) {
         const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
-        if (adminToken) headers["x-admin-token"] = adminToken;
+        const token = getAdminToken();
+        if (token) headers["x-admin-token"] = token;
         return fetch(path, { ...opts, headers });
+      }
+      async function ensureAuth() {
+        const token = getAdminToken();
+        if (!token) {
+          showAdminContent(false);
+          setAuthStatus("Enter your admin token to unlock LLM settings.");
+          return false;
+        }
+        const res = await api("llm/config");
+        if (res.status === 403) {
+          clearAdminToken();
+          showAdminContent(false);
+          setAuthStatus("Invalid or expired admin token. Please enter it again.");
+          return false;
+        }
+        if (!res.ok) {
+          showAdminContent(false);
+          setAuthStatus(`Unable to verify admin access (HTTP ${res.status}).`);
+          return false;
+        }
+        showAdminContent(true);
+        setAuthStatus("");
+        loaded = await res.json();
+        document.getElementById("provider").value = loaded.provider || "dummy";
+        document.getElementById("apiBase").value = loaded.api_base || "";
+        document.getElementById("apiKey").placeholder = loaded.api_key_set ? `current: ${loaded.api_key_preview}` : "required for openai/gateway";
+        document.getElementById("defaultTier").value = loaded.default_tier || "balanced";
+        document.getElementById("tiers").innerHTML = tierIds.map((id) => tierCard(id, loaded.tiers[id] || {})).join("");
+        return true;
       }
       function setStatus(text) { document.getElementById("status").textContent = text || ""; }
       function tierCard(id, data) {
@@ -491,28 +566,37 @@ ADMIN_LLM_HTML = """
         };
       }
       async function load() {
-        const res = await api("llm/config");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        loaded = await res.json();
-        document.getElementById("provider").value = loaded.provider || "dummy";
-        document.getElementById("apiBase").value = loaded.api_base || "";
-        document.getElementById("apiKey").placeholder = loaded.api_key_set ? `current: ${loaded.api_key_preview}` : "required for openai/gateway";
-        document.getElementById("defaultTier").value = loaded.default_tier || "balanced";
-        document.getElementById("tiers").innerHTML = tierIds.map((id) => tierCard(id, loaded.tiers[id] || {})).join("");
+        await ensureAuth();
       }
+      document.getElementById("unlockBtn").onclick = async () => {
+        const input = document.getElementById("adminTokenInput");
+        const token = input ? input.value.trim() : "";
+        if (!token) {
+          setAuthStatus("Admin token is required.");
+          return;
+        }
+        setAdminToken(token);
+        if (input) input.value = "";
+        setAuthStatus("Verifying...");
+        await ensureAuth();
+      };
       document.getElementById("saveBtn").onclick = async () => {
+        if (!(await ensureAuth())) return;
         setStatus("Saving...");
         const res = await api("llm/config", { method: "POST", body: JSON.stringify(collect()) });
         const data = await res.json().catch(() => ({}));
+        if (res.status === 403) { clearAdminToken(); await ensureAuth(); setStatus("Save failed: forbidden"); return; }
         if (!res.ok) { setStatus(`Save failed: ${data.error || res.status}`); return; }
         document.getElementById("apiKey").value = "";
         loaded = data;
         setStatus("Saved.");
       };
       document.getElementById("listBtn").onclick = async () => {
+        if (!(await ensureAuth())) return;
         setStatus("Fetching models...");
         const res = await api("llm/models", { method: "POST", body: JSON.stringify(collect()) });
         const data = await res.json().catch(() => ({}));
+        if (res.status === 403) { clearAdminToken(); await ensureAuth(); setStatus("Fetch failed: forbidden"); return; }
         if (!res.ok) { setStatus(`Fetch failed: ${data.error || res.status}`); return; }
         const box = document.getElementById("models");
         box.hidden = false;
@@ -520,6 +604,7 @@ ADMIN_LLM_HTML = """
         setStatus(`Fetched ${data.models.length} model(s).`);
       };
       document.getElementById("testBtn").onclick = async () => {
+        if (!(await ensureAuth())) return;
         const btn = document.getElementById("testBtn");
         const payload = collect();
         const lines = [];
@@ -536,6 +621,12 @@ ADMIN_LLM_HTML = """
             const testPayload = { ...payload, tier: tierId, model: modelName };
             const res = await api("llm/test", { method: "POST", body: JSON.stringify(testPayload) });
             const data = await res.json().catch(() => ({}));
+            if (res.status === 403) {
+              clearAdminToken();
+              await ensureAuth();
+              lines.push(`${tierId}: FAILED — forbidden`);
+              break;
+            }
             if (!res.ok || !data.ok) {
               lines.push(`${tierId}: FAILED — ${data.error || res.status || "error"}`);
             } else {
@@ -549,7 +640,7 @@ ADMIN_LLM_HTML = """
           btn.disabled = false;
         }
       };
-      load().catch((err) => setStatus(`Load failed: ${err}`));
+      load().catch((err) => setAuthStatus(`Load failed: ${err}`));
     </script>
   </body>
 </html>
@@ -856,9 +947,7 @@ def index_prefixed() -> HTMLResponse:
 
 @app.get("/admin/llm", response_class=HTMLResponse)
 @app.get(f"{APP_PREFIX}/admin/llm", response_class=HTMLResponse)
-def llm_admin_page(request: Request) -> HTMLResponse:
-    if not _is_admin_request(request):
-        return HTMLResponse("Forbidden", status_code=403)
+def llm_admin_page() -> HTMLResponse:
     return HTMLResponse(ADMIN_LLM_HTML)
 
 
@@ -944,7 +1033,9 @@ def get_ai_model_settings(request: Request):
 
 @app.post("/settings/ai_model")
 @app.post(f"{APP_PREFIX}/settings/ai_model")
-def set_ai_model_settings(body: AiModelAliasBody):
+def set_ai_model_settings(request: Request, body: AiModelAliasBody):
+    if not _is_admin_request(request):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
     alias = body.model_alias
     if not set_current_model_alias(alias):
         return JSONResponse(status_code=400, content={"error": "invalid_model_alias"})
@@ -993,7 +1084,10 @@ async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceR
                 return JSONResponse(status_code=429, content={"error": "rate_limited"})
             return JSONResponse(
                 status_code=403,
-                content={"error": "invite_code_required", "reason": invite_result.reason},
+                content={
+                    "error": "invite_code_required",
+                    "reason": _public_invite_failure_reason(invite_result.reason),
+                },
             )
     if not invite_ok:
         return JSONResponse(status_code=403, content={"error": "invite_code_required"})

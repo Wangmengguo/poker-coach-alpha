@@ -32,6 +32,8 @@ EXPOSE 8010
 ENV APP_PREFIX=/cards
 ENV AI_PROVIDER=dummy
 ENV PYTHONUNBUFFERED=1
+# Trust X-Forwarded-For from reverse proxy (Nginx). Safe when bound to 127.0.0.1 only.
+ENV FORWARDED_ALLOW_IPS=*
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -39,4 +41,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Run the application
 # IMPORTANT: --workers 1 is required because game state is in memory
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010", "--workers", "1", "--proxy-headers"]

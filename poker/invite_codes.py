@@ -18,9 +18,9 @@ from typing import List, Optional
 
 
 def _generate_code() -> str:
-    """Generate a random invite code in format POKER-XXXXXX."""
+    """Generate a random invite code in format POKER-XXXXXXXX."""
     chars = string.ascii_uppercase + string.digits
-    suffix = "".join(secrets.choice(chars) for _ in range(6))
+    suffix = "".join(secrets.choice(chars) for _ in range(8))
     return f"POKER-{suffix}"
 
 

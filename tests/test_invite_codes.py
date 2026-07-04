@@ -87,3 +87,10 @@ def test_invite_code_model_allowlist_is_enforced(tmp_path) -> None:
     )
     assert result.ok is False
     assert result.reason == "model_not_allowed"
+
+
+def test_new_invite_codes_use_eight_char_suffix(tmp_path) -> None:
+    store = _store(tmp_path)
+    code = store.create_code()
+    assert code.startswith("POKER-")
+    assert len(code) == len("POKER-") + 8
