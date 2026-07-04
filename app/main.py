@@ -321,6 +321,7 @@ async def _check_invite_code_async(
                 code,
                 session_id=session_id,
                 model_alias=model_alias,
+                bind_session=False,
                 require_session=True,
             )
         )
@@ -345,6 +346,7 @@ async def _consume_invite_llm_call_async(
                 code,
                 session_id=session_id,
                 model_alias=model_alias,
+                bind_session=False,
                 require_session=True,
             )
         )

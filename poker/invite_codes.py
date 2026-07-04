@@ -260,6 +260,7 @@ class InviteCodeStore:
         *,
         session_id: Optional[str] = None,
         model_alias: Optional[str] = None,
+        bind_session: bool = True,
         require_session: bool = False,
     ) -> InviteValidationResult:
         """Validate an invite code and consume one LLM call quota."""
@@ -283,7 +284,7 @@ class InviteCodeStore:
                     code=code,
                     session_id=session_id,
                     model_alias=model_alias,
-                    bind_session=True,
+                    bind_session=bind_session,
                     require_session=require_session,
                 )
                 if not result.ok:

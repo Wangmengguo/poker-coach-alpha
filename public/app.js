@@ -507,9 +507,24 @@ function processMessage(msg) {
       break;
     }
     case 'client_settings_ack': {
+      const llmToggleEl = document.getElementById('llmToggle');
+      const askLlmBtn = document.getElementById('askLlmBtn');
+      if (msg.llm_available !== undefined && llmToggleEl) {
+        llmToggleEl.disabled = !msg.llm_available;
+        if (!msg.llm_available) {
+          llmToggleEl.checked = false;
+          _setStoredBool(STORAGE_KEYS.llmEnabled, false);
+        }
+      }
+      if (msg.llm_available !== undefined && askLlmBtn) {
+        askLlmBtn.disabled = !msg.llm_available;
+      }
       // Handle invite code validation feedback
       if (msg.invite_valid !== undefined) {
         _setInviteStatus(msg.invite_valid ? 'valid' : 'invalid');
+        if (!msg.invite_valid && llmToggleEl && llmToggleEl.checked) {
+          renderer.log('Invite code invalid; LLM calls will stay heuristic until code is accepted.');
+        }
       }
       // Optionally log errors
       if (msg.error) {

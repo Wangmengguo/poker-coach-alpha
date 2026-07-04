@@ -226,6 +226,7 @@ h1 {
 }
 
 .llm-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -235,10 +236,13 @@ h1 {
 
 .llm-toggle input {
   position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   opacity: 0;
-  width: 1px;
-  height: 1px;
-  pointer-events: none;
+  cursor: pointer;
+  z-index: 1;
 }
 
 .llm-toggle__track {
@@ -272,8 +276,9 @@ h1 {
 }
 
 .llm-toggle input:checked + .llm-toggle__track {
-  background: rgba(255, 197, 61, 0.18);
-  border-color: rgba(255, 197, 61, 0.35);
+  background: rgba(255, 197, 61, 0.35);
+  border-color: rgba(255, 197, 61, 0.75);
+  box-shadow: 0 0 0 1px rgba(255, 197, 61, 0.25);
 }
 
 .llm-toggle input:checked + .llm-toggle__track .llm-toggle__thumb {
