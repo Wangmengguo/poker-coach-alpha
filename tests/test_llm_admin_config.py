@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.main import app, _public_invite_failure_reason
@@ -111,3 +113,101 @@ def test_public_invite_failure_reason_masks_enumeration() -> None:
     assert _public_invite_failure_reason("revoked") == "invalid_invite"
     assert _public_invite_failure_reason("session_mismatch") == "session_mismatch"
     assert _public_invite_failure_reason("daily_quota_exhausted") == "daily_quota_exhausted"
+
+
+def test_save_llm_config_requires_api_key_for_openai(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from poker.llm_config import save_llm_config
+
+    payload = {
+        "provider": "openai",
+        "api_base": "https://gateway.example.test/v1",
+        "api_key": "",
+        "default_tier": "balanced",
+        "tiers": {
+            "smart": {"label": "Top", "model": "model-smart", "enabled": True},
+            "balanced": {"label": "Balanced", "model": "model-balanced", "enabled": True},
+            "fast": {"label": "Fast", "model": "model-fast", "enabled": True},
+        },
+    }
+    try:
+        save_llm_config(payload)
+        assert False, "expected missing_api_key"
+    except ValueError as exc:
+        assert str(exc) == "missing_api_key"
+
+
+def test_save_llm_config_keeps_existing_api_key_when_omitted(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from poker.llm_config import load_llm_config, save_llm_config
+
+    base_payload = {
+        "provider": "openai",
+        "api_base": "https://gateway.example.test/v1",
+        "api_key": "sk-existing-secret",
+        "default_tier": "balanced",
+        "tiers": {
+            "smart": {"label": "Top", "model": "model-smart", "enabled": True},
+            "balanced": {"label": "Balanced", "model": "model-balanced", "enabled": True},
+            "fast": {"label": "Fast", "model": "model-fast", "enabled": True},
+        },
+    }
+    save_llm_config(base_payload)
+    save_llm_config(
+        {
+            "provider": "openai",
+            "api_base": "https://gateway.example.test/v1",
+            "default_tier": "fast",
+            "tiers": base_payload["tiers"],
+        }
+    )
+    cfg = load_llm_config()
+    assert cfg["api_key"] == "sk-existing-secret"
+    assert cfg["default_tier"] == "fast"
+
+
+def test_test_gateway_model_empty_response(monkeypatch) -> None:
+    import openai
+    from poker import llm_config as mod
+
+    class _Msg:
+        content = ""
+
+    class _Choice:
+        message = _Msg()
+        finish_reason = "length"
+
+    class _Resp:
+        choices = [_Choice()]
+
+    class _Completions:
+        async def create(self, **kwargs):
+            return _Resp()
+
+    class _Client:
+        chat = type("Chat", (), {"completions": _Completions()})()
+
+    monkeypatch.setattr(mod, "get_provider_credentials", lambda: {"api_key": "sk-test", "api_base": ""})
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: _Client())
+    result = asyncio.run(mod.test_gateway_model("glm-test"))
+    assert result["ok"] is False
+    assert result["error"] == "empty_response"
+    assert result["finish_reason"] == "length"
+
+
+def test_test_gateway_model_structured_sdk_error(monkeypatch) -> None:
+    import openai
+    from poker import llm_config as mod
+
+    class _Completions:
+        async def create(self, **kwargs):
+            raise RuntimeError("gateway down")
+
+    class _Client:
+        chat = type("Chat", (), {"completions": _Completions()})()
+
+    monkeypatch.setattr(mod, "get_provider_credentials", lambda: {"api_key": "sk-test", "api_base": ""})
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: _Client())
+    result = asyncio.run(mod.test_gateway_model("glm-test"))
+    assert result["ok"] is False
+    assert "RuntimeError: gateway down" in result["error"]

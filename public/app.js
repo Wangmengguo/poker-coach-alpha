@@ -5,11 +5,11 @@ import { ActionHandler } from './modules/actions.js';
 import { AnalysisDrawer } from './modules/analysis.js';
 import { audioManager } from './modules/audio.js';
 import { MessageQueue, SPEED_PRESETS } from './modules/messageQueue.js';
-import { withBase } from './utils/constants.js';
+import { withBase, wsAbsoluteUrl } from './utils/constants.js';
 
 const gameState = new GameState();
 const renderer = new Renderer();
-const wsManager = new WebSocketManager();
+const wsManager = new WebSocketManager(null);
 const actionHandler = new ActionHandler(renderer, gameState, wsManager);
 const analysisDrawer = new AnalysisDrawer(renderer, gameState);
 
@@ -21,6 +21,7 @@ const STORAGE_KEYS = {
   modelAlias: 'pokerCoach.modelAlias',
   inviteCode: 'pokerCoach.inviteCode',
   inviteSessionId: 'pokerCoach.inviteSessionId',
+  tableSessionId: 'pokerCoach.tableSessionId',
 };
 
 function _setAskButtonState(btn, state, label) {
@@ -79,6 +80,30 @@ function _getInviteSessionId() {
   }
   _setStoredStr(STORAGE_KEYS.inviteSessionId, sessionId);
   return sessionId;
+}
+
+function _getTableSessionId() {
+  let sessionId = _getStoredStr(STORAGE_KEYS.tableSessionId, '');
+  if (sessionId) return sessionId;
+  try {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    sessionId = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+  _setStoredStr(STORAGE_KEYS.tableSessionId, sessionId);
+  return sessionId;
+}
+
+function _resetSessionUiAfterServerRestart() {
+  const actionsEl = document.getElementById('actions');
+  if (actionsEl) actionsEl.innerHTML = '';
+  const nextHandBtn = document.getElementById('nextHandBtn');
+  if (nextHandBtn) nextHandBtn.style.display = 'none';
+  renderer.updateSessionInfo(null, false);
+  gameState.updateSnapshot(null);
+  gameState.setLegalActions([]);
 }
 
 function _sendClientSettings() {
@@ -305,6 +330,11 @@ async function initModelSelector() {
 function processMessage(msg) {
   switch (msg.type) {
     case 'snapshot': {
+      if (!msg.table) {
+        _resetSessionUiAfterServerRestart();
+        renderer.log('Session was reset (server restarted)');
+        break;
+      }
       gameState.updateSnapshot(msg);
       renderer.renderState(msg.table, gameState.snapshot);
       gameState.updateAnalysis({
@@ -599,6 +629,30 @@ if (skipQueueBtn) {
   };
 }
 
+async function bootstrapTable(attempt = 0) {
+  const sessionId = _getTableSessionId();
+  try {
+    const res = await fetch(withBase('/tables'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (!res.ok) {
+      throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    }
+    const { table_id: tableId } = await res.json();
+    gameState.setTableId(tableId);
+    wsManager.setUrl(wsAbsoluteUrl(`/ws/tables/${tableId}?player_id=human`));
+    wsManager.connect();
+    return true;
+  } catch (e) {
+    const delay = Math.min(1000 * 2 ** attempt, 30000);
+    renderer.log(`Table bootstrap failed (${e}); retrying in ${Math.round(delay / 1000)}s...`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return bootstrapTable(attempt + 1);
+  }
+}
+
 // WebSocket event handlers
 wsManager.on('open', () => {
   gameState.setConnectionStatus('connected', 0);
@@ -608,7 +662,7 @@ wsManager.on('open', () => {
   renderer.announce('Connected to server');
   renderer.renderConnectionStatus('connected');
 
-  // Auto-join default table once when the connection is first established
+  // Auto-join table once when the connection is first established
   if (!hasAutoJoined) {
     hasAutoJoined = true;
     actionHandler.join();
@@ -657,7 +711,10 @@ wsManager.on('message', (msg) => {
 // Initialize
 gameState.setConnectionStatus('connecting', 0);
 renderer.renderConnectionStatus('connecting');
-wsManager.connect();
+bootstrapTable().catch((e) => {
+  renderer.log(`Bootstrap error: ${e}`);
+  renderer.renderConnectionStatus('failed');
+});
 renderer.log('Poker Coach Alpha started');
 renderer.updateSessionInfo(null, false);
 

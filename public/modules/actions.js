@@ -1,5 +1,3 @@
-import { DEFAULT_TABLE_ID } from '../utils/constants.js';
-import { setVisible } from '../utils/dom.js';
 import { withBase } from '../utils/constants.js';
 
 /**
@@ -26,12 +24,20 @@ export class ActionHandler {
   }
 
   async join() {
+    const tableId = this.gameState.getTableId();
+    if (!tableId) {
+      this.renderer.log('No table id yet; waiting for bootstrap.');
+      return;
+    }
     try {
-      const res = await fetch(withBase('/tables'), { method: 'POST' });
-      const { table_id } = await res.json();
-      const j = await fetch(withBase(`/tables/${table_id}/join`), { method: 'POST' });
+      const j = await fetch(withBase(`/tables/${tableId}/join`), { method: 'POST' });
+      if (!j.ok) {
+        const err = await j.json().catch(() => ({}));
+        this.renderer.log(`Join failed: ${err.error || j.statusText}`);
+        return;
+      }
       const joined = await j.json();
-      this.renderer.log(`Joined table ${table_id} as seat ${joined.seat}`);
+      this.renderer.log(`Joined table ${tableId} as seat ${joined.seat}`);
     } catch (e) {
       this.renderer.log(`Join failed: ${e}`);
     }
@@ -39,7 +45,8 @@ export class ActionHandler {
 
   async start() {
     try {
-      const res = await fetch(withBase(`/tables/${DEFAULT_TABLE_ID}/start`), { method: 'POST' });
+      const tableId = this.gameState.getTableId();
+      const res = await fetch(withBase(`/tables/${tableId}/start`), { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         this.renderer.log(`Cannot start session: ${err.error || res.statusText}`);
@@ -62,7 +69,7 @@ export class ActionHandler {
     if (!this.nextHandBtn) return;
     try {
       this.nextHandBtn.disabled = true;
-      const res = await fetch(withBase(`/tables/${DEFAULT_TABLE_ID}/next`), { method: 'POST' });
+      const res = await fetch(withBase(`/tables/${this.gameState.getTableId()}/next`), { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         this.renderer.log(`Cannot start next hand: ${err.error || res.statusText}`);

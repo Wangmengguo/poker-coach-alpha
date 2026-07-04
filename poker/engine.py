@@ -543,7 +543,7 @@ class TableEngine:
         hand_over = self.is_hand_over()
         session_active = bool(self.session_active)
         return {
-            "table_id": "default",
+            "table_id": self.cfg.session_id,
             "hand_id": f"h_{self.hand_index:05d}",
             "button_seat": self.button_seat,
             "blinds": {"sb": self.cfg.sb, "bb": self.cfg.bb},

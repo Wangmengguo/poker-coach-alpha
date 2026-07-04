@@ -126,13 +126,18 @@ def save_llm_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     next_cfg = {
         "provider": provider,
         "api_base": str(_value("api_base", current.get("api_base", ""))).strip(),
-        "api_key": str(_value("api_key", current.get("api_key", ""))).strip(),
+        "api_key": "",
         "default_tier": str(
             _value("default_tier", current.get("default_tier", "balanced"))
         ).strip()
         or "balanced",
         "tiers": {},
     }
+
+    if "api_key" in payload and payload.get("api_key") is not None:
+        next_cfg["api_key"] = str(payload.get("api_key") or "").strip()
+    else:
+        next_cfg["api_key"] = str(current.get("api_key") or "").strip()
 
     raw_tiers = payload.get("tiers", current.get("tiers", {}))
     if not isinstance(raw_tiers, dict):
@@ -147,6 +152,9 @@ def save_llm_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if next_cfg["default_tier"] not in next_cfg["tiers"]:
         raise ValueError("invalid_default_tier")
+
+    if next_cfg["provider"] in {"openai", "gateway"} and not next_cfg["api_key"]:
+        raise ValueError("missing_api_key")
 
     path = config_path()
     path.write_text(json.dumps(next_cfg, indent=2, sort_keys=True), encoding="utf-8")
@@ -270,21 +278,36 @@ async def test_gateway_model(
             }
         )
     if not creds["api_key"]:
-        return {"ok": False, "error": "missing_api_key"}
+        return {"ok": False, "error": "missing_api_key", "model": model}
 
     client = AsyncOpenAI(
         api_key=creds["api_key"] or None,
         base_url=creds["api_base"] or None,
     )
-    resp = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": "Reply with exactly: ok"}],
-        max_tokens=8,
-        temperature=0,
-    )
-    text = ""
     try:
-        text = str(resp.choices[0].message.content or "").strip()
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with exactly: ok"}],
+            max_tokens=256,
+            temperature=0,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "model": model}
+
+    text = ""
+    finish_reason = None
+    try:
+        choice = resp.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        text = str(choice.message.content or "").strip()
     except Exception:
         text = ""
-    return {"ok": bool(text), "model": model, "response": text[:80]}
+
+    if not text:
+        return {
+            "ok": False,
+            "error": "empty_response",
+            "model": model,
+            "finish_reason": finish_reason,
+        }
+    return {"ok": True, "model": model, "response": text[:80]}

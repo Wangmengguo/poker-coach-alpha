@@ -23,7 +23,7 @@ class TestPokerIntegration:
 
         # Get table snapshot
         snapshot = engine.build_table_snapshot()
-        assert snapshot["table_id"] == "default"
+        assert snapshot["table_id"] == "test"
         assert len(snapshot["players"]) == 6
         assert snapshot["players"][0]["id"] == "human"  # Seat 1
 
@@ -181,14 +181,13 @@ class TestPokerIntegration:
         - REST /tables + /join + /start are called afterwards via the UI
         """
         client = TestClient(app)
+        table_id = client.post("/tables", json={"session_id": "ws-flow-after-connect"}).json()[
+            "table_id"
+        ]
 
         # Connect WS first (as the browser does)
-        with client.websocket_connect("/ws/tables/default?player_id=human") as websocket:
-            # No state yet – engine has not started a session
-            # Now start session via REST, as the Start Game button does
-            client.post("/tables")
-            client.post("/tables/default/join")
-            start_res = client.post("/tables/default/start")
+        with client.websocket_connect(f"/ws/tables/{table_id}?player_id=human") as websocket:
+            start_res = client.post(f"/tables/{table_id}/start")
             assert start_res.status_code == 200
 
             # After starting the session, the WS should receive at least one message.

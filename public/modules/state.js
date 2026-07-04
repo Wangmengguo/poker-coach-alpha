@@ -22,6 +22,7 @@ export class GameState {
     };
     this.connection = { status: 'disconnected', retryCount: 0 };
     this.legalActions = [];
+    this.tableId = null;
     this.lifetimeBase = this._loadLifetimeBase();
     this.sessionCommitted = false;
   }
@@ -60,7 +61,12 @@ export class GameState {
     return hero ? hero.seat : null;
   }
 
+  setTableId(tableId) {
+    this.tableId = tableId ? String(tableId) : null;
+  }
+
   getTableId() {
+    if (this.tableId) return this.tableId;
     const table = this.getTable();
     return table?.table_id || DEFAULT_TABLE_ID;
   }

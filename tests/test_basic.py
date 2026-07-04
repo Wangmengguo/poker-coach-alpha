@@ -19,7 +19,7 @@ def test_engine_basic():
 
     # Get table snapshot
     snapshot = engine.build_table_snapshot()
-    assert snapshot["table_id"] == "default"
+    assert snapshot["table_id"] == "test"
     assert len(snapshot["players"]) == 6
     assert snapshot["players"][0]["id"] == "human"  # Seat 1
 

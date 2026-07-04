@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 import asyncio
 from dataclasses import dataclass
+import hashlib
 import os
 import secrets
 import time
@@ -153,6 +154,75 @@ _engines: Dict[str, TableEngine] = {
 # NOTE: Only works with --workers 1 (single process). Multi-worker deployments
 # would need Redis/DB-based locking.
 _table_locks: Dict[str, asyncio.Lock] = {}
+_table_last_activity: Dict[str, float] = {}
+
+
+def _table_limit() -> int:
+    return _env_int("TABLE_LIMIT", 50)
+
+
+def _table_ttl_seconds() -> int:
+    return _env_int("TABLE_TTL_SECONDS", 1800)
+
+
+def _touch_table_activity(table_id: str) -> None:
+    _table_last_activity[table_id] = time.monotonic()
+
+
+def _table_id_from_session(session_id: str) -> str:
+    digest = hashlib.sha256(session_id.encode()).hexdigest()[:12]
+    return f"t_{digest}"
+
+
+def _get_or_create_engine(table_id: str) -> Optional[TableEngine]:
+    """Return an engine for table_id, creating one if missing. None if at capacity."""
+    if table_id in _engines:
+        _touch_table_activity(table_id)
+        return _engines[table_id]
+    if len(_engines) >= _table_limit():
+        return None
+    engine = TableEngine(EngineConfig(session_id=table_id))
+    _engines[table_id] = engine
+    _touch_table_activity(table_id)
+    return engine
+
+
+def _evict_idle_tables(now: Optional[float] = None) -> List[str]:
+    """Remove idle tables with no WS connections past TTL. Never evicts default."""
+    current = now if now is not None else time.monotonic()
+    ttl = float(_table_ttl_seconds())
+    evicted: List[str] = []
+    for table_id in list(_engines.keys()):
+        if table_id == DEFAULT_TABLE_ID:
+            continue
+        conns = manager.active_connections.get(table_id)
+        if conns:
+            continue
+        last = _table_last_activity.get(table_id, 0.0)
+        if current - last < ttl:
+            continue
+        _engines.pop(table_id, None)
+        _table_locks.pop(table_id, None)
+        _table_last_activity.pop(table_id, None)
+        evicted.append(table_id)
+        stale_keys = [k for k in _hand_strength_cache if k and k[0] == table_id]
+        for key in stale_keys:
+            _hand_strength_cache.pop(key, None)
+    return evicted
+
+
+async def _table_eviction_loop() -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            _evict_idle_tables()
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def _startup_table_eviction() -> None:
+    asyncio.create_task(_table_eviction_loop())
 
 
 def _get_table_lock(table_id: str) -> asyncio.Lock:
@@ -374,6 +444,10 @@ def _llm_call_rate_limited(
 
 class AiModelAliasBody(BaseModel):
     model_alias: str
+
+
+class CreateTableBody(BaseModel):
+    session_id: Optional[str] = None
 
 
 class AiAdviceRequestBody(BaseModel):
@@ -1011,9 +1085,14 @@ async def test_llm_gateway(request: Request):
 
 @app.post("/tables")
 @app.post(f"{APP_PREFIX}/tables")
-def create_table():
-    table_id = DEFAULT_TABLE_ID
-    _engines[table_id] = TableEngine(EngineConfig(session_id=table_id))
+async def create_table(body: Optional[CreateTableBody] = None):
+    session_id = ""
+    if body is not None and body.session_id:
+        session_id = str(body.session_id).strip()
+    table_id = _table_id_from_session(session_id) if session_id else DEFAULT_TABLE_ID
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
     return {"table_id": table_id}
 
 
@@ -1045,9 +1124,9 @@ def set_ai_model_settings(request: Request, body: AiModelAliasBody):
 @app.post("/tables/{table_id}/join")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/join")
 def join_table(table_id: str):
-    engine = _engines.get(table_id)
-    if not engine:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
     # MVP: fixed human seat 1
     return {"player_id": "human", "seat": 1}
 
@@ -1096,9 +1175,11 @@ async def request_llm_ai_advice(request: Request, table_id: str, body: AiAdviceR
 
     # Gather state under lock (fast) so we don't hold it during the LLM call.
     async with _get_table_lock(table_id):
-        engine = _engines.get(table_id)
-        if not engine or engine.state is None:
-            return JSONResponse(status_code=404, content={"error": "table not found"})
+        engine = _get_or_create_engine(table_id)
+        if engine is None:
+            return JSONResponse(status_code=503, content={"error": "table_limit"})
+        if engine.state is None:
+            return JSONResponse(status_code=400, content={"error": "session_not_active"})
 
         idx = engine._seat_to_state_index(seat)  # type: ignore[attr-defined]
         if idx is None:
@@ -1157,11 +1238,11 @@ async def _schedule_prompt_tasks(table_id: str, seat_act: int) -> None:
 @app.post("/tables/{table_id}/start")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/start")
 async def start_session(table_id: str):
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
     # Acquire lock for state mutation
     async with _get_table_lock(table_id):
-        engine = _engines.get(table_id)
-        if not engine:
-            return JSONResponse(status_code=404, content={"error": "table not found"})
         # Prevent starting a new session while one is already active; callers
         # should use /restart if they need to force-reset mid-session.
         if getattr(engine, "session_active", False):
@@ -1186,11 +1267,13 @@ async def start_session(table_id: str):
 @app.post("/tables/{table_id}/next")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/next")
 async def next_hand(table_id: str):
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
     # Acquire lock for state mutation
     async with _get_table_lock(table_id):
-        engine = _engines.get(table_id)
-        if not engine or engine.state is None:
-            return JSONResponse(status_code=404, content={"error": "table not found"})
+        if engine.state is None:
+            return JSONResponse(status_code=400, content={"error": "session_not_active"})
         ok, reason = engine.start_next_hand()
         if not ok:
             if reason:
@@ -1215,9 +1298,11 @@ async def next_hand(table_id: str):
 @app.get("/tables/{table_id}/state")
 @app.get(f"{APP_PREFIX}/tables/{{table_id}}/state")
 def get_state(table_id: str):
-    engine = _engines.get(table_id)
-    if not engine or engine.state is None:
-        return JSONResponse(status_code=404, content={"error": "table not found"})
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
+    if engine.state is None:
+        return {"type": "snapshot", "seq": 0, "table": None}
     snap = engine.build_table_snapshot()
     return {"type": "snapshot", "seq": 0, "table": snap}
 
@@ -1225,11 +1310,11 @@ def get_state(table_id: str):
 @app.post("/tables/{table_id}/restart")
 @app.post(f"{APP_PREFIX}/tables/{{table_id}}/restart")
 async def restart_session(table_id: str):
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        return JSONResponse(status_code=503, content={"error": "table_limit"})
     # Acquire lock for state mutation
     async with _get_table_lock(table_id):
-        engine = _engines.get(table_id)
-        if not engine:
-            return JSONResponse(status_code=404, content={"error": "table not found"})
         # Restart fresh session (keep same session_id)
         engine.restart_session()
         # Advance until prompt or hand end
@@ -1250,10 +1335,15 @@ async def restart_session(table_id: str):
 @app.websocket("/ws/tables/{table_id}")
 @app.websocket(f"{APP_PREFIX}/ws/tables/{{table_id}}")
 async def ws_table(websocket: WebSocket, table_id: str):
+    engine = _get_or_create_engine(table_id)
+    if engine is None:
+        await websocket.accept()
+        await websocket.close(code=1013, reason="table_limit")
+        return
     await manager.connect(table_id, websocket)
+    _touch_table_activity(table_id)
     try:
-        engine = _engines.get(table_id)
-        if engine and engine.state is not None:
+        if engine.state is not None:
             await websocket.send_json(
                 {"type": "snapshot", "seq": 0, "table": engine.build_table_snapshot()}
             )
@@ -1269,6 +1359,10 @@ async def ws_table(websocket: WebSocket, table_id: str):
         # Main loop: receive client actions and advance engine
         while True:
             data = await websocket.receive_json()
+            _touch_table_activity(table_id)
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "t": data.get("t")})
+                continue
             if data.get("type") == "client_settings":
                 llm_enabled = data.get("llm_enabled")
                 model_alias = data.get("model_alias")
@@ -1353,7 +1447,7 @@ async def ws_table(websocket: WebSocket, table_id: str):
 
                 async with _get_table_lock(table_id):
                     engine = _engines.get(table_id)
-                    if not engine or engine.state is None:
+                    if engine is None or engine.state is None:
                         error_to_send = Error(message="table not ready")
                     else:
                         # Validate and parse client action

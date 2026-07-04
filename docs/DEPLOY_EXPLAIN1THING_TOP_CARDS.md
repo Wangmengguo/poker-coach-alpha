@@ -714,6 +714,15 @@ FORWARDED_ALLOW_IPS=*
 - `POST /settings/ai_model` 已改为 Admin 专用；普通用户通过前端模型下拉切换（WebSocket），不会改全局默认档。
 - 创建邀请码时建议加配额：`--max-uses` + `--daily-quota`。
 
+#### LLM 配置不生效排查顺序
+
+1. 服务器 `.env` 已设置 `ADMIN_TOKEN` 且容器/服务已重启（未设置时 admin 页任何保存都是 403，表现为「配置输不进去」）。
+2. 打开 `https://explain1thing.top/cards/admin/llm` → Unlock → 将 smart / balanced / fast 三个 tier 的 model 改为网关上**真实存在**的模型 ID → Save。
+3. 点 **Fetch model list** 验证 `OPENAI_API_BASE` + Key 连通。
+4. 点 **Test all tiers**；若某档失败，看 status 栏的 `empty_response` / 具体错误信息。
+5. 本机执行 `curl -s http://127.0.0.1:8010/cards/settings/ai_model`，确认 `"llm_available": true`。
+6. 游戏内输入邀请码、开启 LLM、点 **Ask once**；日志里 `reason` 应为 `llm_actions`，而非 `dummy_provider`。
+
 ### 15.3 启动 Docker 服务
 
 ```bash
